@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
 from runtime.constants import PATCH_FILE
 
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def resolve_task_dir(task_root: Path, task_id: str) -> Path:
+    if not TASK_ID_PATTERN.fullmatch(task_id):
+        raise ValueError("invalid task id")
+    return task_root / task_id
+
 
 def create_task_dir(task_root: Path, task_id: str) -> Path:
-    task_dir = task_root / task_id
+    task_dir = resolve_task_dir(task_root, task_id)
     task_dir.mkdir(parents=True, exist_ok=True)
     return task_dir
 

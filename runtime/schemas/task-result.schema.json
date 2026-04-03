@@ -15,9 +15,33 @@
     "terminal_state"
   ],
   "properties": {
+    "task_id": {"type": "string"},
     "status": {
       "type": "string",
       "enum": ["completed", "blocked", "failed"]
+    },
+    "summary": {"type": "string"},
+    "decisions": {"type": "array", "items": {"type": "string"}},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "verification": {
+      "type": "object",
+      "required": ["commands_run", "results", "all_passed"],
+      "properties": {
+        "commands_run": {"type": "array", "items": {"type": "string"}},
+        "results": {"type": "array", "items": {"type": "string"}},
+        "all_passed": {"type": "boolean"}
+      }
+    },
+    "open_questions": {"type": "array", "items": {"type": "string"}},
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "follow_up_suggestions": {"type": "array", "items": {"type": "string"}},
+    "agent_usage": {
+      "type": "object",
+      "required": ["used_subagents", "notes"],
+      "properties": {
+        "used_subagents": {"type": "boolean"},
+        "notes": {"type": "string"}
+      }
     },
     "terminal_state": {
       "type": "string",

@@ -26,3 +26,8 @@ class StatusToolTests(TestCase):
             )
             exit_code = main(["cleanup", "--task", "task-2", "--task-root", tmp])
             self.assertNotEqual(exit_code, 0)
+
+    def test_cleanup_rejects_path_traversal_task_id(self) -> None:
+        with TemporaryDirectory() as tmp:
+            exit_code = main(["cleanup", "--task", "../oops", "--task-root", tmp])
+            self.assertNotEqual(exit_code, 0)

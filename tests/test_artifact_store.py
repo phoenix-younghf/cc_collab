@@ -15,3 +15,8 @@ class ArtifactStoreTests(TestCase):
             write_log_artifact(task_dir, "run.log", "hello\n")
             self.assertTrue((task_dir / "request.json").exists())
             self.assertTrue((task_dir / "run.log").exists())
+
+    def test_invalid_task_id_is_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                create_task_dir(Path(tmp), "../oops")

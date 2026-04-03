@@ -31,7 +31,7 @@ def create_task_owned_commit(
     task_id: str,
 ) -> dict[str, object]:
     add_result = subprocess.run(
-        ["git", "-C", str(isolated_path), "add", *declared_files],
+        ["git", "-C", str(isolated_path), "add", "--", *declared_files],
         text=True,
         capture_output=True,
         check=False,

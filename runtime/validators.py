@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+from pathlib import PurePosixPath
+
 from runtime.constants import (
     CLOSEOUT_MAPPING,
     EXECUTION_MODES,
@@ -12,6 +15,8 @@ from runtime.constants import (
 
 class ValidationError(ValueError):
     """Raised when a request or result contract is invalid."""
+
+TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -38,11 +43,19 @@ def validate_request(payload: dict) -> None:
     _require(isinstance(files, list), "inputs.files must be a list")
     if write_policy == "write-in-place":
         _require(files, "write-in-place requires explicit files")
-        _require(
-            all(isinstance(item, str) and item and not item.startswith("/") for item in files),
-            "write task files must be explicit repository-relative file paths",
-        )
+    if write_policy in {"write-in-place", "write-isolated"}:
+        for item in files:
+            _require(isinstance(item, str) and item, "file path must be a non-empty string")
+            candidate = PurePosixPath(item)
+            _require(not candidate.is_absolute(), "file paths must be relative")
+            _require(".." not in candidate.parts, "file paths must not traverse upward")
+            _require(not item.startswith("-"), "file paths must not start with '-'")
     _require(payload.get("task_id"), "task_id is required")
+    _require(
+        isinstance(payload.get("task_id"), str)
+        and TASK_ID_PATTERN.fullmatch(payload["task_id"]) is not None,
+        "task_id is invalid",
+    )
     _require(payload.get("workdir"), "workdir is required")
     _require(payload.get("objective"), "objective is required")
     _require(payload.get("context_summary"), "context_summary is required")

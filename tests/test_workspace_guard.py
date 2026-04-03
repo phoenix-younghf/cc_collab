@@ -4,7 +4,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-from runtime.workspace_guard import capture_baseline, detect_unsafe_dirty_state
+from runtime.workspace_guard import (
+    capture_baseline,
+    detect_post_run_changes_with_snapshots,
+    detect_unsafe_dirty_state,
+    snapshot_paths,
+)
 
 
 class WorkspaceGuardTests(TestCase):
@@ -29,3 +34,18 @@ class WorkspaceGuardTests(TestCase):
     def test_missing_git_capture_is_fatal(self) -> None:
         with self.assertRaises(RuntimeError):
             capture_baseline(Path("/tmp/project"), ["src.txt"], git_head=None, git_status=None)  # type: ignore[arg-type]
+
+    def test_snapshot_detection_catches_dirty_file_rewrite(self) -> None:
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            target = project / "src.txt"
+            target.write_text("before", encoding="utf-8")
+            pre_snapshot = snapshot_paths(project, ["src.txt"])
+            target.write_text("after", encoding="utf-8")
+            changed = detect_post_run_changes_with_snapshots(
+                project,
+                " M src.txt",
+                pre_snapshot,
+                " M src.txt",
+            )
+            self.assertEqual(changed, ["src.txt"])

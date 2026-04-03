@@ -26,17 +26,19 @@ def build_patch_ready_metadata(task_dir: str) -> dict[str, str]:
 def generate_patch(
     workdir: Path,
     task_dir: Path,
-    declared_files: list[str],
+    paths_to_patch: list[str],
 ) -> dict[str, str]:
+    if not paths_to_patch:
+        raise RuntimeError("no paths to patch")
     patch_path = task_dir / PATCH_FILE
     subprocess.run(
-        ["git", "-C", str(workdir), "add", "-N", *declared_files],
+        ["git", "-C", str(workdir), "add", "-N", "--", *paths_to_patch],
         text=True,
         capture_output=True,
         check=False,
     )
     result = subprocess.run(
-        ["git", "-C", str(workdir), "diff", "--binary", "--", *declared_files],
+        ["git", "-C", str(workdir), "diff", "--binary", "--", *paths_to_patch],
         text=True,
         capture_output=True,
         check=False,

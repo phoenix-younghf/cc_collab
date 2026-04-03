@@ -15,6 +15,18 @@
   ],
   "properties": {
     "task_id": {"type": "string"},
+    "origin": {
+      "type": "object",
+      "required": ["controller", "workflow_stage"],
+      "properties": {
+        "controller": {"type": "string"},
+        "workflow_stage": {"type": "string"}
+      }
+    },
+    "workdir": {"type": "string"},
+    "objective": {"type": "string"},
+    "context_summary": {"type": "string"},
+    "task_id": {"type": "string"},
     "task_type": {
       "type": "string",
       "enum": ["research", "review", "design-review", "plan-review", "implementation"]
@@ -26,6 +38,32 @@
     "write_policy": {
       "type": "string",
       "enum": ["read-only", "write-in-place", "write-isolated"]
+    },
+    "inputs": {
+      "type": "object",
+      "required": ["files", "constraints", "acceptance_criteria", "verification_commands", "closeout"],
+      "properties": {
+        "files": {"type": "array", "items": {"type": "string"}},
+        "constraints": {"type": "array", "items": {"type": "string"}},
+        "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+        "verification_commands": {"type": "array", "items": {"type": "string"}},
+        "closeout": {
+          "type": "object",
+          "required": ["on_success", "on_failure"],
+          "properties": {
+            "on_success": {"type": "string"},
+            "on_failure": {"type": "string"}
+          }
+        }
+      }
+    },
+    "claude_role": {
+      "type": "object",
+      "required": ["mode", "allow_subagents"],
+      "properties": {
+        "mode": {"type": "string"},
+        "allow_subagents": {"type": "boolean"}
+      }
     }
   }
 }

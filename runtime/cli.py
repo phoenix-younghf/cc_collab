@@ -34,7 +34,10 @@ from runtime.workspace_guard import (
     capture_git_head,
     capture_git_status,
     detect_post_run_changes,
+    detect_post_run_changes_with_snapshots,
     detect_unsafe_dirty_state,
+    changed_paths_from_git_status,
+    snapshot_paths,
     undeclared_changed_files,
 )
 from runtime.worktree_manager import create_isolated_worktree, create_task_owned_commit
@@ -65,6 +68,28 @@ def resolve_task_root(override: str | None) -> Path:
 
 def load_request(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _repair_result_once(
+    *,
+    workdir: Path,
+    schema_json: str,
+    broken_output: str,
+) -> dict:
+    repair_prompt = (
+        "Repair the following output into valid JSON that matches the schema. "
+        "Return JSON only.\n\n"
+        f"{broken_output}"
+    )
+    repair_command = build_command(
+        workdir=str(workdir),
+        prompt=repair_prompt,
+        schema_json=schema_json,
+        runtime_contract="repair_mode=true",
+        agent_pack_json=None,
+    )
+    repaired_stdout, _ = run_claude(repair_command)
+    return parse_result(repaired_stdout)
 
 
 def task_failure_result(
@@ -123,15 +148,30 @@ def handle_run(args: argparse.Namespace) -> int:
 
     baseline = None
     pre_status = None
+    pre_status_snapshot: dict[str, str | None] = {}
     target_workdir = workdir
     try:
         if write_policy in {"read-only", "write-in-place"}:
             try:
                 pre_status = capture_git_status(workdir)
                 git_head = capture_git_head(workdir)
+                pre_status_snapshot = snapshot_paths(
+                    workdir,
+                    changed_paths_from_git_status(pre_status),
+                )
             except RuntimeError:
                 pre_status = None
                 git_head = None
+            if write_policy == "read-only" and pre_status is None:
+                failure = task_failure_result(
+                    task_id,
+                    "inspection-required",
+                    "git status capture failed for read-only workspace",
+                    verification_commands=verification_commands,
+                )
+                persist_result(task_dir, failure)
+                artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
+                return 1
             if write_policy == "write-in-place":
                 if pre_status is None:
                     failure = task_failure_result(
@@ -171,6 +211,7 @@ def handle_run(args: argparse.Namespace) -> int:
 
         prompt_name = DEFAULT_PROMPT_BY_TASK[request["task_type"]]
         prompt = load_prompt(prompt_name)
+        prompt = f"{prompt}\n\n{render_request_markdown(request)}"
         schema_json = load_schema_text("task-result.schema.json")
         runtime_contract = (
             f"task_id={task_id}\n"
@@ -195,12 +236,24 @@ def handle_run(args: argparse.Namespace) -> int:
         )
         stdout, stderr = run_claude(command)
         run_log_lines.append(stderr)
-        result = parse_result(stdout)
+        try:
+            result = parse_result(stdout)
+        except json.JSONDecodeError:
+            result = _repair_result_once(
+                workdir=target_workdir,
+                schema_json=schema_json,
+                broken_output=stdout,
+            )
         changed_files = result.get("changed_files", [])
 
         if write_policy == "read-only" and pre_status is not None:
             post_status = capture_git_status(workdir)
-            read_only_changes = detect_post_run_changes(pre_status, post_status)
+            read_only_changes = detect_post_run_changes_with_snapshots(
+                workdir,
+                pre_status,
+                pre_status_snapshot,
+                post_status,
+            )
             if read_only_changes:
                 failure = task_failure_result(
                     task_id,
@@ -219,10 +272,15 @@ def handle_run(args: argparse.Namespace) -> int:
 
         if write_policy == "write-in-place" and pre_status is not None:
             post_status = capture_git_status(workdir)
-            changed_paths = detect_post_run_changes(pre_status, post_status)
+            changed_paths = detect_post_run_changes_with_snapshots(
+                workdir,
+                pre_status,
+                pre_status_snapshot,
+                post_status,
+            )
             undeclared = undeclared_changed_files(changed_paths, declared_files)
             if undeclared:
-                terminal = "inspection-required"
+                terminal = choose_failure_terminal_state([failure_terminal])
                 failure = task_failure_result(
                     task_id,
                     terminal,
@@ -230,6 +288,17 @@ def handle_run(args: argparse.Namespace) -> int:
                     changed_files=undeclared,
                     verification_commands=verification_commands,
                 )
+                if terminal == "patch-ready":
+                    try:
+                        failure.update(generate_patch(workdir, task_dir, changed_paths))
+                    except RuntimeError:
+                        failure = task_failure_result(
+                            task_id,
+                            "inspection-required",
+                            "patch generation failed",
+                            changed_files=undeclared,
+                            verification_commands=verification_commands,
+                        )
                 persist_result(task_dir, failure)
                 artifact_store.write_log_artifact(
                     task_dir,
@@ -288,7 +357,7 @@ def handle_run(args: argparse.Namespace) -> int:
 
 
 def _task_dir_for(task_root: Path, task_id: str) -> Path:
-    return task_root / task_id
+    return artifact_store.resolve_task_dir(task_root, task_id)
 
 
 def handle_status(args: argparse.Namespace) -> int:
@@ -328,18 +397,22 @@ def handle_doctor() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "run":
-        return handle_run(args)
-    if args.command == "status":
-        return handle_status(args)
-    if args.command == "open":
-        return handle_open(args)
-    if args.command == "cleanup":
-        return handle_cleanup(args)
-    if args.command == "doctor":
-        return handle_doctor()
-    parser.print_help()
-    return 0
+    try:
+        if args.command == "run":
+            return handle_run(args)
+        if args.command == "status":
+            return handle_status(args)
+        if args.command == "open":
+            return handle_open(args)
+        if args.command == "cleanup":
+            return handle_cleanup(args)
+        if args.command == "doctor":
+            return handle_doctor()
+        parser.print_help()
+        return 0
+    except (FileNotFoundError, ValidationError, ValueError) as exc:
+        print(str(exc))
+        return 1
 
 
 if __name__ == "__main__":

@@ -83,3 +83,25 @@ class ValidatorTests(TestCase):
         }
         with self.assertRaises(ValidationError):
             validate_result(result, write_policy="read-only", allowed_terminal_state="archived")
+
+    def test_paths_must_not_traverse_or_start_with_dash(self) -> None:
+        request = {
+            "task_id": "task-4",
+            "task_type": "implementation",
+            "execution_mode": "single-worker",
+            "write_policy": "write-in-place",
+            "origin": {"controller": "codex", "workflow_stage": "implementation"},
+            "workdir": "/tmp/project",
+            "objective": "Do work",
+            "context_summary": "Summary",
+            "inputs": {
+                "files": ["../secret.txt"],
+                "constraints": [],
+                "acceptance_criteria": ["A"],
+                "verification_commands": ["python3 -m unittest"],
+                "closeout": {"on_success": "integrated", "on_failure": "patch-ready"},
+            },
+            "claude_role": {"mode": "implementation", "allow_subagents": False},
+        }
+        with self.assertRaises(ValidationError):
+            validate_request(request)
