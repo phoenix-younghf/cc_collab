@@ -149,19 +149,20 @@ def handle_run(args: argparse.Namespace) -> int:
     baseline = None
     pre_status = None
     pre_status_snapshot: dict[str, str | None] = {}
+    pre_git_head: str | None = None
     target_workdir = workdir
     try:
         if write_policy in {"read-only", "write-in-place"}:
             try:
                 pre_status = capture_git_status(workdir)
-                git_head = capture_git_head(workdir)
+                pre_git_head = capture_git_head(workdir)
                 pre_status_snapshot = snapshot_paths(
                     workdir,
                     changed_paths_from_git_status(pre_status),
                 )
             except RuntimeError:
                 pre_status = None
-                git_head = None
+                pre_git_head = None
             if write_policy == "read-only" and pre_status is None:
                 failure = task_failure_result(
                     task_id,
@@ -183,25 +184,19 @@ def handle_run(args: argparse.Namespace) -> int:
                     persist_result(task_dir, failure)
                     artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
                     return 1
-                baseline = capture_baseline(workdir, declared_files, git_head=git_head, git_status=pre_status)
+                baseline = capture_baseline(
+                    workdir,
+                    declared_files,
+                    git_head=pre_git_head,
+                    git_status=pre_status,
+                )
                 if detect_unsafe_dirty_state(baseline):
-                    terminal = choose_failure_terminal_state([failure_terminal])
                     failure = task_failure_result(
                         task_id,
-                        terminal,
+                        "inspection-required",
                         "write-in-place workspace is unsafe",
                         verification_commands=verification_commands,
                     )
-                    if terminal == "patch-ready":
-                        try:
-                            failure.update(generate_patch(workdir, task_dir, declared_files))
-                        except RuntimeError:
-                            failure = task_failure_result(
-                                task_id,
-                                "inspection-required",
-                                "patch generation failed",
-                                verification_commands=verification_commands,
-                            )
                     persist_result(task_dir, failure)
                     artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
                     return 1
@@ -248,6 +243,21 @@ def handle_run(args: argparse.Namespace) -> int:
 
         if write_policy == "read-only" and pre_status is not None:
             post_status = capture_git_status(workdir)
+            post_git_head = capture_git_head(workdir)
+            if post_git_head != pre_git_head:
+                failure = task_failure_result(
+                    task_id,
+                    "inspection-required",
+                    "read-only task changed repository HEAD",
+                    verification_commands=verification_commands,
+                )
+                persist_result(task_dir, failure)
+                artifact_store.write_log_artifact(
+                    task_dir,
+                    RUN_LOG,
+                    "\n".join(run_log_lines) + "\n",
+                )
+                return 1
             read_only_changes = detect_post_run_changes_with_snapshots(
                 workdir,
                 pre_status,
@@ -272,6 +282,21 @@ def handle_run(args: argparse.Namespace) -> int:
 
         if write_policy == "write-in-place" and pre_status is not None:
             post_status = capture_git_status(workdir)
+            post_git_head = capture_git_head(workdir)
+            if post_git_head != pre_git_head:
+                failure = task_failure_result(
+                    task_id,
+                    "inspection-required",
+                    "write-in-place task changed repository HEAD",
+                    verification_commands=verification_commands,
+                )
+                persist_result(task_dir, failure)
+                artifact_store.write_log_artifact(
+                    task_dir,
+                    RUN_LOG,
+                    "\n".join(run_log_lines) + "\n",
+                )
+                return 1
             changed_paths = detect_post_run_changes_with_snapshots(
                 workdir,
                 pre_status,
@@ -338,7 +363,7 @@ def handle_run(args: argparse.Namespace) -> int:
     except (ValidationError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         terminal = choose_failure_terminal_state([failure_terminal])
         metadata: dict | None = None
-        if terminal == "patch-ready" and write_policy in {"write-in-place", "write-isolated"}:
+        if terminal == "patch-ready" and write_policy == "write-isolated" and declared_files:
             try:
                 metadata = generate_patch(target_workdir, task_dir, declared_files)
             except RuntimeError:

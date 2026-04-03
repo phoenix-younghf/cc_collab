@@ -141,3 +141,34 @@ class CliIntegrationTests(TestCase):
             )
             self.assertNotEqual(exit_code, 0)
             self.assertEqual(result["terminal_state"], "inspection-required")
+
+    @patch(
+        "runtime.cli.run_claude",
+        return_value=(
+            '{"task_id":"task-4","status":"completed","summary":"ok","decisions":[],"changed_files":[],"verification":{"commands_run":[],"results":[],"all_passed":true},"open_questions":[],"risks":[],"follow_up_suggestions":[],"agent_usage":{"used_subagents":false,"notes":""},"terminal_state":"archived"}',
+            "",
+        ),
+    )
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    @patch("runtime.cli.capture_git_head", side_effect=["before", "after"])
+    def test_read_only_head_change_forces_inspection_required(
+        self,
+        _mock_head,
+        _mock_status,
+        _mock_changes,
+        _mock_run,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request_path = Path(tmp) / "request.json"
+            request_path.write_text(
+                '{"task_id":"task-4","task_type":"research","execution_mode":"single-worker","write_policy":"read-only","origin":{"controller":"codex","workflow_stage":"research"},"workdir":"%s","objective":"Research","context_summary":"Summary","inputs":{"files":[],"constraints":[],"acceptance_criteria":["A"],"verification_commands":[],"closeout":{"on_success":"archived","on_failure":"inspection-required"}},"claude_role":{"mode":"research","allow_subagents":false}}'
+                % tmp,
+                encoding="utf-8",
+            )
+            exit_code = main(["run", "--request", str(request_path), "--task-root", tmp])
+            result = json.loads(
+                (Path(tmp) / "task-4" / "result.json").read_text(encoding="utf-8")
+            )
+            self.assertNotEqual(exit_code, 0)
+            self.assertEqual(result["terminal_state"], "inspection-required")

@@ -105,3 +105,25 @@ class ValidatorTests(TestCase):
         }
         with self.assertRaises(ValidationError):
             validate_request(request)
+
+    def test_write_isolated_also_requires_explicit_files(self) -> None:
+        request = {
+            "task_id": "task-5",
+            "task_type": "implementation",
+            "execution_mode": "single-worker",
+            "write_policy": "write-isolated",
+            "origin": {"controller": "codex", "workflow_stage": "implementation"},
+            "workdir": "/tmp/project",
+            "objective": "Do work",
+            "context_summary": "Summary",
+            "inputs": {
+                "files": [],
+                "constraints": [],
+                "acceptance_criteria": ["A"],
+                "verification_commands": ["python3 -m unittest"],
+                "closeout": {"on_success": "commit-ready", "on_failure": "inspection-required"},
+            },
+            "claude_role": {"mode": "implementation", "allow_subagents": False},
+        }
+        with self.assertRaises(ValidationError):
+            validate_request(request)

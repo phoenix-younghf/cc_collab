@@ -41,14 +41,14 @@ def validate_request(payload: dict) -> None:
     )
     files = payload.get("inputs", {}).get("files", [])
     _require(isinstance(files, list), "inputs.files must be a list")
-    if write_policy == "write-in-place":
-        _require(files, "write-in-place requires explicit files")
     if write_policy in {"write-in-place", "write-isolated"}:
+        _require(files, "write policies require explicit files")
         for item in files:
             _require(isinstance(item, str) and item, "file path must be a non-empty string")
             candidate = PurePosixPath(item)
             _require(not candidate.is_absolute(), "file paths must be relative")
             _require(".." not in candidate.parts, "file paths must not traverse upward")
+            _require("." not in candidate.parts, "file paths must not contain '.' segments")
             _require(not item.startswith("-"), "file paths must not start with '-'")
     _require(payload.get("task_id"), "task_id is required")
     _require(

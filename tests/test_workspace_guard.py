@@ -49,3 +49,10 @@ class WorkspaceGuardTests(TestCase):
                 " M src.txt",
             )
             self.assertEqual(changed, ["src.txt"])
+
+    def test_directory_path_is_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "dir").mkdir()
+            with self.assertRaises(RuntimeError):
+                capture_baseline(project, ["dir"], git_head="abc123", git_status="")

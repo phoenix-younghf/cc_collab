@@ -61,6 +61,8 @@ def capture_baseline(
     captured: list[FileBaseline] = []
     for relative_path in files:
         full = project_root / relative_path
+        if full.exists() and not full.is_file():
+            raise RuntimeError("declared path must be a file")
         captured.append(
             FileBaseline(
                 relative_path=relative_path,
@@ -81,7 +83,10 @@ def changed_paths_from_git_status(status: str) -> list[str]:
     paths: list[str] = []
     for line in status.splitlines():
         if len(line) >= 4:
-            paths.append(line[3:])
+            raw_path = line[3:]
+            if " -> " in raw_path:
+                raw_path = raw_path.split(" -> ", 1)[1]
+            paths.append(raw_path)
     return paths
 
 

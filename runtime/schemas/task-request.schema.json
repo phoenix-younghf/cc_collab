@@ -14,7 +14,6 @@
     "claude_role"
   ],
   "properties": {
-    "task_id": {"type": "string"},
     "origin": {
       "type": "object",
       "required": ["controller", "workflow_stage"],
