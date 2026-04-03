@@ -1,0 +1,18 @@
+{
+  "task_id": "example-implementation",
+  "task_type": "implementation",
+  "execution_mode": "multi-agent",
+  "write_policy": "write-in-place",
+  "origin": {"controller": "codex", "workflow_stage": "implementation"},
+  "workdir": "/tmp/project",
+  "objective": "Implement the target",
+  "context_summary": "Example implementation request",
+  "inputs": {
+    "files": ["src/example.py"],
+    "constraints": [],
+    "acceptance_criteria": ["Update src/example.py"],
+    "verification_commands": ["python3 -m unittest"],
+    "closeout": {"on_success": "integrated", "on_failure": "patch-ready"}
+  },
+  "claude_role": {"mode": "implementation", "allow_subagents": true}
+}

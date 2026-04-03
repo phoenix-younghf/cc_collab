@@ -1,0 +1,18 @@
+{
+  "task_id": "example-review",
+  "task_type": "review",
+  "execution_mode": "single-worker",
+  "write_policy": "read-only",
+  "origin": {"controller": "codex", "workflow_stage": "review"},
+  "workdir": "/tmp/project",
+  "objective": "Review the target",
+  "context_summary": "Example review request",
+  "inputs": {
+    "files": [],
+    "constraints": [],
+    "acceptance_criteria": ["Return review findings"],
+    "verification_commands": [],
+    "closeout": {"on_success": "archived", "on_failure": "inspection-required"}
+  },
+  "claude_role": {"mode": "review", "allow_subagents": false}
+}
