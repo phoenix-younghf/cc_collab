@@ -64,6 +64,7 @@ def run_doctor(
         DoctorCheck("git", exists("git"), "git command available"),
         DoctorCheck("python3", exists("python3"), "python3 command available"),
         DoctorCheck("claude", claude_exists, "claude command available"),
+        DoctorCheck("ccollab", exists("ccollab"), "ccollab command available"),
     ]
     for flag in REQUIRED_CLAUDE_FLAGS:
         checks.append(

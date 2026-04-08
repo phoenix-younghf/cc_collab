@@ -61,7 +61,8 @@
       "required": ["mode", "allow_subagents"],
       "properties": {
         "mode": {"type": "string"},
-        "allow_subagents": {"type": "boolean"}
+        "allow_subagents": {"type": "boolean"},
+        "model": {"type": "string"}
       }
     }
   }

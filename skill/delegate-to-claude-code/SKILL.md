@@ -29,6 +29,24 @@ Do not delegate automatically when:
 - Claude output is advisory until verification is re-run locally.
 - Use request/result artifacts produced by `ccollab` rather than ad-hoc summaries.
 
+## Bootstrap
+
+Before exploring docs or building a request:
+
+```bash
+command -v ccollab >/dev/null 2>&1 || source ~/.zprofile
+ccollab doctor || (cd ~/workspace/cc_collab && python3 -m runtime.cli doctor)
+```
+
+If `ccollab` is still unavailable, use the repository entrypoint directly from `~/workspace/cc_collab`:
+
+```bash
+cd ~/workspace/cc_collab
+python3 -m runtime.cli run --request /path/to/request.json
+```
+
+Prefer this bootstrap sequence over ad-hoc repo exploration.
+
 ## Closeout Expectations
 
 - Require explicit terminal state in task result metadata.

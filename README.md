@@ -11,6 +11,20 @@ ccollab doctor
 
 Use the Codex skill at `delegate-to-claude-code` when the task is suitable for local Claude delegation, then run `ccollab` commands for request execution and closeout verification.
 
+If `ccollab` is not resolved in the current shell yet:
+
+```bash
+source ~/.zprofile
+ccollab doctor
+```
+
+Fallback from the repo checkout:
+
+```bash
+cd ~/workspace/cc_collab
+python3 -m runtime.cli doctor
+```
+
 ## What Gets Installed
 
 - Skill symlink: `$CODEX_HOME/skills/delegate-to-claude-code` (or `~/.codex/skills/delegate-to-claude-code`)

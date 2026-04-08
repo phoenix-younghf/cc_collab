@@ -13,7 +13,7 @@ from runtime.closeout_manager import (
     generate_patch,
     validate_terminal_state,
 )
-from runtime.config import resolve_paths
+from runtime.config import resolve_claude_model, resolve_paths
 from runtime.constants import (
     DEFAULT_PROMPT_BY_TASK,
     REQUEST_JSON,
@@ -43,6 +43,21 @@ from runtime.workspace_guard import (
 from runtime.worktree_manager import create_isolated_worktree, create_task_owned_commit
 
 
+REQUIRED_RESULT_KEYS = {
+    "task_id",
+    "status",
+    "summary",
+    "decisions",
+    "changed_files",
+    "verification",
+    "open_questions",
+    "risks",
+    "follow_up_suggestions",
+    "agent_usage",
+    "terminal_state",
+}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ccollab")
     subparsers = parser.add_subparsers(dest="command")
@@ -68,6 +83,53 @@ def resolve_task_root(override: str | None) -> Path:
 
 def load_request(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _looks_like_task_result(payload: dict) -> bool:
+    return isinstance(payload, dict) and REQUIRED_RESULT_KEYS.issubset(payload)
+
+
+def _repair_source_output(parsed_output: dict, raw_output: str) -> str:
+    nested = parsed_output.get("result") if isinstance(parsed_output, dict) else None
+    if isinstance(nested, str) and nested.strip():
+        return nested
+    return raw_output
+
+
+def _summarize_unstructured_output(text: str, limit: int = 240) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
+def _normalize_unstructured_result(
+    *,
+    task_id: str,
+    raw_output: str,
+    verification_commands: list[str],
+) -> dict:
+    return {
+        "task_id": task_id,
+        "status": "completed",
+        "summary": _summarize_unstructured_output(raw_output),
+        "decisions": [],
+        "changed_files": [],
+        "verification": {
+            "commands_run": [],
+            "results": [],
+            "all_passed": not verification_commands,
+        },
+        "open_questions": [],
+        "risks": [],
+        "follow_up_suggestions": [],
+        "agent_usage": {
+            "used_subagents": False,
+            "notes": "normalized from unstructured Claude output",
+        },
+        "terminal_state": "archived",
+        "raw_output": raw_output,
+    }
 
 
 def _repair_result_once(
@@ -228,6 +290,7 @@ def handle_run(args: argparse.Namespace) -> int:
             schema_json=schema_json,
             runtime_contract=runtime_contract,
             agent_pack_json=serialize_agent_pack(agent_pack),
+            model=resolve_claude_model(request),
         )
         stdout, stderr = run_claude(command)
         run_log_lines.append(stderr)
@@ -239,6 +302,19 @@ def handle_run(args: argparse.Namespace) -> int:
                 schema_json=schema_json,
                 broken_output=stdout,
             )
+        if not _looks_like_task_result(result):
+            raw_result_output = _repair_source_output(result, stdout)
+            result = _repair_result_once(
+                workdir=target_workdir,
+                schema_json=schema_json,
+                broken_output=raw_result_output,
+            )
+            if not _looks_like_task_result(result):
+                result = _normalize_unstructured_result(
+                    task_id=task_id,
+                    raw_output=raw_result_output,
+                    verification_commands=verification_commands,
+                )
         changed_files = result.get("changed_files", [])
 
         if write_policy == "read-only" and pre_status is not None:

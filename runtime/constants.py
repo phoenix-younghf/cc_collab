@@ -43,6 +43,8 @@ REQUIRED_CLAUDE_FLAGS = (
     "--agents",
 )
 
+DEFAULT_CLAUDE_MODEL = "claude-opus-4-6"
+
 CLOSEOUT_MAPPING = {
     "read-only": {"success": {"archived"}, "failure": {"inspection-required"}},
     "write-in-place": {

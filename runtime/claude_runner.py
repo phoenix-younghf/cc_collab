@@ -42,10 +42,16 @@ def build_command(
     schema_json: str,
     runtime_contract: str,
     agent_pack_json: str | None,
+    model: str | None = None,
 ) -> list[str]:
     cmd = [
         "claude",
         "-p",
+    ]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend(
+        [
         "--output-format",
         "json",
         "--json-schema",
@@ -54,7 +60,8 @@ def build_command(
         workdir,
         "--append-system-prompt",
         runtime_contract,
-    ]
+        ]
+    )
     if agent_pack_json:
         cmd.extend(["--agents", agent_pack_json])
     cmd.append(prompt)

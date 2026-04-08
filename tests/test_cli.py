@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,23 @@ class CliSmokeTests(TestCase):
     def test_unknown_command_fails(self) -> None:
         result = run_cli("nope")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_installed_entrypoint_works_outside_repo_via_symlink(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            entrypoint = tmp_path / "ccollab"
+            entrypoint.symlink_to(ROOT / "bin" / "ccollab")
+            env = os.environ.copy()
+            env.pop("PYTHONPATH", None)
+            result = subprocess.run(
+                [str(entrypoint), "--help"],
+                cwd=tmp_path,
+                text=True,
+                capture_output=True,
+                env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("doctor", result.stdout)
 
 
 class CliIntegrationTests(TestCase):
@@ -126,6 +144,80 @@ class CliIntegrationTests(TestCase):
             prompt = mock_build_command.call_args.kwargs["prompt"]
             self.assertIn("Research prompt", prompt)
             self.assertIn("Return findings", prompt)
+
+    @patch(
+        "runtime.cli.run_claude",
+        side_effect=[
+            (
+                '{"type":"result","subtype":"success","is_error":false,"result":"Delegation succeeded. Evidence came from README.md and runtime/claude_runner.py."}',
+                "",
+            ),
+            (
+                '{"task_id":"task-2b","status":"completed","summary":"ok","decisions":[],"changed_files":[],"verification":{"commands_run":[],"results":[],"all_passed":true},"open_questions":[],"risks":[],"follow_up_suggestions":[],"agent_usage":{"used_subagents":false,"notes":"repair"},"terminal_state":"archived"}',
+                "",
+            ),
+        ],
+    )
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    def test_run_repairs_envelope_result_without_structured_payload(
+        self,
+        _mock_status,
+        _mock_changes,
+        mock_run,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = Path(tmp) / "request.json"
+            request.write_text(
+                '{"task_id":"task-2b","task_type":"research","execution_mode":"single-worker","write_policy":"read-only","origin":{"controller":"codex","workflow_stage":"research"},"workdir":"%s","objective":"Research prompt","context_summary":"Summary body","inputs":{"files":[],"constraints":[],"acceptance_criteria":["Return findings"],"verification_commands":[],"closeout":{"on_success":"archived","on_failure":"inspection-required"}},"claude_role":{"mode":"research","allow_subagents":false}}'
+                % tmp,
+                encoding="utf-8",
+            )
+            exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            result = json.loads(
+                (Path(tmp) / "task-2b" / "result.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(mock_run.call_count, 2)
+
+    @patch(
+        "runtime.cli.run_claude",
+        side_effect=[
+            (
+                '{"type":"result","subtype":"success","is_error":false,"result":"Delegation succeeded based on README.md and runtime/claude_runner.py."}',
+                "",
+            ),
+            (
+                '{"answer":"yes","explanation":"Delegation is implemented.","evidence":["README.md","runtime/claude_runner.py"]}',
+                "",
+            ),
+        ],
+    )
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    def test_run_normalizes_nonstandard_repair_payload_for_read_only_success(
+        self,
+        _mock_status,
+        _mock_changes,
+        mock_run,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = Path(tmp) / "request.json"
+            request.write_text(
+                '{"task_id":"task-2c","task_type":"research","execution_mode":"single-worker","write_policy":"read-only","origin":{"controller":"codex","workflow_stage":"research"},"workdir":"%s","objective":"Research prompt","context_summary":"Summary body","inputs":{"files":[],"constraints":[],"acceptance_criteria":["Return findings"],"verification_commands":[],"closeout":{"on_success":"archived","on_failure":"inspection-required"}},"claude_role":{"mode":"research","allow_subagents":false}}'
+                % tmp,
+                encoding="utf-8",
+            )
+            exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            result = json.loads(
+                (Path(tmp) / "task-2c" / "result.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["terminal_state"], "archived")
+            self.assertIn("Delegation succeeded", result["summary"])
+            self.assertEqual(mock_run.call_count, 2)
 
     def test_non_git_read_only_fails_closed(self) -> None:
         with TemporaryDirectory() as tmp:

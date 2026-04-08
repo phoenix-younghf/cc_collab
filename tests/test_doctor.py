@@ -15,6 +15,16 @@ class DoctorTests(TestCase):
         )
         self.assertFalse(report.ok)
 
+    def test_doctor_fails_when_ccollab_missing_even_if_path_contains_bin_dir(self) -> None:
+        report = run_doctor(
+            command_exists=lambda name: name != "ccollab",
+            flag_probe=lambda _flag: True,
+            writable_probe=lambda _path: True,
+            path_probe=lambda _value: True,
+        )
+        self.assertFalse(report.ok)
+        self.assertIn("ccollab", [check.name for check in report.checks])
+
     def test_doctor_checks_required_claude_flags(self) -> None:
         report = run_doctor(
             command_exists=lambda _name: True,

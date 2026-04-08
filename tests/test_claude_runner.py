@@ -14,9 +14,12 @@ class ClaudeRunnerTests(TestCase):
             schema_json='{"type":"object"}',
             runtime_contract="contract",
             agent_pack_json='{"researcher": {}}',
+            model="opus",
         )
         self.assertIn("--json-schema", cmd)
         self.assertIn("--agents", cmd)
+        self.assertIn("--model", cmd)
+        self.assertIn("opus", cmd)
         self.assertIn("/tmp/project", cmd)
 
     def test_research_agent_pack_contains_required_roles(self) -> None:

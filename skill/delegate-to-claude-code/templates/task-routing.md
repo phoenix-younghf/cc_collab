@@ -5,7 +5,7 @@
 - `design-review`: architecture and spec quality checks
 - `plan-review`: decomposition and risk checks
 - `research`: bounded fact-finding with references
-- `code-review`: independent quality/regression review
+- `review`: independent quality/regression review
 - `implementation`: bounded coding tasks with explicit acceptance criteria
 
 ## Keep Local (Codex)
@@ -21,4 +21,3 @@
 - Allowed write locations
 - Verification command list
 - Expected closeout policy and terminal state
-
