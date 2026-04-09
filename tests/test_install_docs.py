@@ -9,6 +9,8 @@ class InstallDocsTests(TestCase):
             readme.lstrip().startswith("## Quick Install"),
             "README.md must begin with the Quick Install section.",
         )
+        self.assertIn("macOS / Linux", readme)
+        self.assertIn("Windows", readme)
         self.assertIn("./install/install-all.sh", readme)
         self.assertIn("ccollab doctor", readme)
 

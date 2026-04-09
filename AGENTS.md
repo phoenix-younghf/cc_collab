@@ -1,5 +1,10 @@
 # Agent Setup
 
+Platform note:
+
+- `macOS / Linux`: supported
+- `Windows`: use WSL for now; native PowerShell / CMD install is not supported yet
+
 Install:
 
 ```bash
@@ -17,4 +22,3 @@ If verification fails, run:
 ```bash
 python3 -m runtime.cli doctor
 ```
-

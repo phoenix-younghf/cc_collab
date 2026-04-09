@@ -1,5 +1,12 @@
 ## Quick Install
 
+Current installer support:
+
+- `macOS / Linux`: supported
+- `Windows`: use WSL for now; native PowerShell / CMD install is not supported yet
+
+macOS / Linux:
+
 ```bash
 git clone <repo-url> ~/workspace/cc_collab
 cd ~/workspace/cc_collab
