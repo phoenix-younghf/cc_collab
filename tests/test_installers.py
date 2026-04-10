@@ -85,6 +85,29 @@ exit {0 if succeeds else 1}
     return log_path
 
 
+def _make_fake_windows_python(bin_dir: Path) -> Path:
+    log_path = bin_dir / "fake-python.log"
+    script = rf"""@echo off
+setlocal
+>> "%CCOLLAB_FAKE_PYTHON_LOG%" echo ARGS=%*
+>> "%CCOLLAB_FAKE_PYTHON_LOG%" echo PYTHONPATH=%PYTHONPATH%
+if "%~1"=="-3" (
+    shift
+)
+if "%~1"=="-c" (
+    exit /b 0
+)
+if "%~1"=="-m" if "%~2"=="runtime.cli" if "%~3"=="doctor" (
+    echo Doctor status: OK
+    exit /b 0
+)
+exit /b 0
+"""
+    for name in ("py.cmd", "python.cmd", "python3.cmd"):
+        _write_executable(bin_dir / name, script)
+    return log_path
+
+
 def _build_archive_style_source_tree(temp_root: Path) -> Path:
     source_root = temp_root / "archive-source"
     source_root.mkdir(parents=True, exist_ok=True)
@@ -194,6 +217,10 @@ def _pwsh_command() -> str:
     return shutil.which("pwsh") or "pwsh"
 
 
+def _cmd_command() -> str:
+    return shutil.which("cmd") or "cmd"
+
+
 def run_install_all_ps1_without_python(
     *,
     temp_root: str,
@@ -232,6 +259,70 @@ def run_install_all_ps1_without_python(
     )
 
 
+def run_install_script_with_fake_windows_python(
+    *,
+    temp_root: str,
+) -> subprocess.CompletedProcess[str]:
+    temp_path = Path(temp_root)
+    home = temp_path / "home"
+    bin_dir = temp_path / "bin"
+    home.mkdir(parents=True, exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log_path = _make_fake_windows_python(bin_dir)
+    env = {
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        "APPDATA": str(home / "AppData" / "Roaming"),
+        "CODEX_HOME": str(home / ".codex"),
+        "PATH": os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")]),
+        "CCOLLAB_FAKE_PYTHON_LOG": str(log_path),
+    }
+    return subprocess.run(
+        [
+            _pwsh_command(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(REPO_ROOT / "install" / "install-all.ps1"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def run_installed_windows_launcher_with_fake_python(
+    arguments: list[str],
+    *,
+    temp_root: str,
+) -> tuple[subprocess.CompletedProcess[str], subprocess.CompletedProcess[str], Path]:
+    temp_path = Path(temp_root)
+    install_result = run_install_script_with_fake_windows_python(temp_root=temp_root)
+    home = temp_path / "home"
+    launcher = _user_bin_dir(home) / "ccollab.cmd"
+    python_log = temp_path / "bin" / "fake-python.log"
+    result = subprocess.run(
+        [_cmd_command(), "/c", str(launcher), *arguments],
+        env={
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "LOCALAPPDATA": str(home / "AppData" / "Local"),
+            "APPDATA": str(home / "AppData" / "Roaming"),
+            "CODEX_HOME": str(home / ".codex"),
+            "PATH": os.pathsep.join([str(temp_path / "bin"), os.environ.get("PATH", "")]),
+            "CCOLLAB_FAKE_PYTHON_LOG": str(python_log),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, install_result, python_log
+
+
 class InstallerTests(TestCase):
     def test_install_all_sh_copies_runtime_and_runs_doctor(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -268,6 +359,25 @@ class InstallerTests(TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             log_text = python_log.read_text(encoding="utf-8")
             self.assertIn("ARGS=-m runtime.cli doctor", log_text)
+            self.assertIn(str(install_root), log_text)
+            self.assertNotIn(str(REPO_ROOT), log_text)
+
+    @skipUnless(
+        shutil.which("cmd") and shutil.which("pwsh"),
+        "cmd and pwsh required for Windows launcher forwarding",
+    )
+    def test_installed_windows_launcher_forwards_arguments_from_install_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result, install_result, python_log = run_installed_windows_launcher_with_fake_python(
+                ["doctor"],
+                temp_root=tmp,
+            )
+            home = Path(tmp) / "home"
+            install_root = home / "AppData" / "Local" / "cc_collab" / "install"
+            self.assertEqual(install_result.returncode, 0, install_result.stderr)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            log_text = python_log.read_text(encoding="utf-8")
+            self.assertIn("runtime.cli doctor", log_text)
             self.assertIn(str(install_root), log_text)
             self.assertNotIn(str(REPO_ROOT), log_text)
 
