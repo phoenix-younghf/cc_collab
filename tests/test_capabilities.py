@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import TestCase
 
 from runtime.capabilities import (
+    detect_python_capability,
     detect_claude_capabilities,
     detect_git_capabilities,
     detect_python_launcher,
@@ -28,6 +29,14 @@ class FakeGit:
 
 
 class CapabilityTests(TestCase):
+    def test_detect_python_capability_includes_platform_remediation_when_missing(self) -> None:
+        capability = detect_python_capability(
+            os_name="posix",
+            command_exists=lambda _name: False,
+        )
+        self.assertFalse(capability.available)
+        self.assertIn("Homebrew", capability.remediation)
+
     def test_detect_python_launcher_prefers_windows_py(self) -> None:
         launcher = detect_python_launcher(
             os_name="nt",
@@ -49,6 +58,7 @@ class CapabilityTests(TestCase):
         )
         self.assertTrue(capability.available)
         self.assertIn("--json-schema", capability.missing_flags)
+        self.assertIn("upgrade", capability.remediation.lower())
 
     def test_detect_git_capabilities_degrades_when_worktree_missing(self) -> None:
         caps = detect_git_capabilities(
@@ -58,6 +68,7 @@ class CapabilityTests(TestCase):
         )
         self.assertEqual(caps.mode, "git-aware")
         self.assertFalse(caps.worktree_usable)
+        self.assertIn("git worktree", caps.remediation.lower())
 
     def test_detect_git_capabilities_uses_filesystem_only_when_git_missing(self) -> None:
         caps = detect_git_capabilities(
@@ -76,3 +87,4 @@ class CapabilityTests(TestCase):
         )
         self.assertEqual(caps.mode, "filesystem-only")
         self.assertFalse(caps.repo)
+        self.assertIn("repository", caps.remediation.lower())

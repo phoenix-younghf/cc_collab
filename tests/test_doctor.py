@@ -101,6 +101,19 @@ class DoctorTests(TestCase):
         self.assertIn("Runtime Readiness", rendered)
         self.assertIn("Enhanced Safety Capability", rendered)
 
+    def test_doctor_renders_actionable_remediation(self) -> None:
+        report = run_doctor(
+            command_exists=lambda name: name not in {"claude", "git", "python", "python3", "py"},
+            flag_probe=lambda _flag: True,
+            writable_probe=lambda _path: True,
+            path_probe=lambda _value: False,
+            launcher_probe=lambda: (False, "launcher invocation failed"),
+        )
+        rendered = render_doctor_report(report)
+        self.assertIn("Install Claude CLI", rendered)
+        self.assertIn("Add", rendered)
+        self.assertIn("PATH", rendered)
+
     def test_doctor_fails_when_launcher_is_broken(self) -> None:
         report = run_doctor(
             command_exists=lambda _name: True,

@@ -16,9 +16,17 @@ RunGit = Callable[[Path, list[str]], tuple[int, str, str]]
 
 
 @dataclass(frozen=True)
+class PythonCapability:
+    available: bool
+    launcher: str | None
+    remediation: str | None
+
+
+@dataclass(frozen=True)
 class ClaudeCapability:
     available: bool
     missing_flags: list[str]
+    remediation: str | None
 
 
 @dataclass(frozen=True)
@@ -27,6 +35,7 @@ class GitCapabilities:
     repo: bool
     worktree_usable: bool
     mode: str
+    remediation: str | None
 
 
 def _default_command_exists(name: str) -> bool:
@@ -62,13 +71,43 @@ def detect_python_launcher(
     os_name: str | None = None,
     command_exists: CommandExists | None = None,
 ) -> str | None:
+    capability = detect_python_capability(
+        os_name=os_name,
+        command_exists=command_exists,
+    )
+    return capability.launcher
+
+
+def detect_python_capability(
+    *,
+    os_name: str | None = None,
+    command_exists: CommandExists | None = None,
+) -> PythonCapability:
     target_os = os.name if os_name is None else os_name
     exists = _default_command_exists if command_exists is None else command_exists
     candidates = ("py", "python", "python3") if target_os == "nt" else ("python3", "python")
     for candidate in candidates:
         if exists(candidate):
-            return candidate
-    return None
+            return PythonCapability(
+                available=True,
+                launcher=candidate,
+                remediation=None,
+            )
+    if target_os == "nt":
+        remediation = (
+            "Install Python 3.9 or newer and rerun ccollab doctor. "
+            "If available, use: winget install --exact --id Python.Python.3"
+        )
+    else:
+        remediation = (
+            "Install Python 3.9 or newer and rerun ccollab doctor. "
+            "On macOS, you can use Homebrew: brew install python"
+        )
+    return PythonCapability(
+        available=False,
+        launcher=None,
+        remediation=remediation,
+    )
 
 
 def detect_claude_capabilities(
@@ -79,9 +118,23 @@ def detect_claude_capabilities(
     exists = _default_command_exists if command_exists is None else command_exists
     probe = _default_flag_probe if flag_probe is None else flag_probe
     if not exists("claude"):
-        return ClaudeCapability(available=False, missing_flags=list(REQUIRED_CLAUDE_FLAGS))
+        return ClaudeCapability(
+            available=False,
+            missing_flags=list(REQUIRED_CLAUDE_FLAGS),
+            remediation="Install Claude CLI, then rerun ccollab doctor.",
+        )
     missing_flags = [flag for flag in REQUIRED_CLAUDE_FLAGS if not probe(flag)]
-    return ClaudeCapability(available=True, missing_flags=missing_flags)
+    remediation = None
+    if missing_flags:
+        remediation = (
+            "Upgrade Claude CLI so it supports the required flags: "
+            + ", ".join(missing_flags)
+        )
+    return ClaudeCapability(
+        available=True,
+        missing_flags=missing_flags,
+        remediation=remediation,
+    )
 
 
 def detect_git_capabilities(
@@ -98,6 +151,7 @@ def detect_git_capabilities(
             repo=False,
             worktree_usable=False,
             mode="filesystem-only",
+            remediation="Install Git to enable git-aware safety features and patch-based closeout.",
         )
 
     repo_returncode, repo_stdout, _repo_stderr = runner(
@@ -111,6 +165,7 @@ def detect_git_capabilities(
             repo=False,
             worktree_usable=False,
             mode="filesystem-only",
+            remediation="Run ccollab inside a Git repository to enable git-aware safety features.",
         )
 
     worktree_returncode, _worktree_stdout, _worktree_stderr = runner(
@@ -122,4 +177,9 @@ def detect_git_capabilities(
         repo=True,
         worktree_usable=worktree_returncode == 0,
         mode="git-aware",
+        remediation=(
+            None
+            if worktree_returncode == 0
+            else "Enable git worktree support to keep write-isolated runs on the Git-backed path."
+        ),
     )

@@ -10,7 +10,7 @@ from typing import Callable
 from runtime.capabilities import (
     detect_claude_capabilities,
     detect_git_capabilities,
-    detect_python_launcher,
+    detect_python_capability,
 )
 from runtime.config import resolve_paths
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
@@ -23,6 +23,7 @@ class DoctorCheck:
     severity: str
     section: str
     detail: str
+    remediation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,7 @@ def run_doctor(
 ) -> DoctorReport:
     current_os = os.name if os_name is None else os_name
     exists = command_exists or (lambda name: shutil.which(name) is not None)
-    python_runtime = detect_python_launcher(os_name=current_os, command_exists=exists)
+    python_capability = detect_python_capability(os_name=current_os, command_exists=exists)
     claude_capability = detect_claude_capabilities(
         command_exists=exists,
         flag_probe=flag_probe,
@@ -99,14 +100,15 @@ def run_doctor(
     checks = [
         DoctorCheck(
             "python",
-            python_runtime is not None,
+            python_capability.available,
             "error",
             "Install Readiness",
             (
-                f"python runtime available ({python_runtime})"
-                if python_runtime
-                else "python runtime available"
+                f"python runtime available ({python_capability.launcher})"
+                if python_capability.launcher
+                else "python runtime unavailable"
             ),
+            remediation=python_capability.remediation,
         ),
         DoctorCheck(
             "launcher",
@@ -114,6 +116,11 @@ def run_doctor(
             "error",
             "Install Readiness",
             launcher_detail,
+            remediation=(
+                None
+                if launcher_ok
+                else "Reinstall ccollab to repair the launcher and rerun ccollab doctor."
+            ),
         ),
         DoctorCheck(
             "claude",
@@ -121,16 +128,19 @@ def run_doctor(
             "error",
             "Runtime Readiness",
             "claude command available",
+            remediation=claude_capability.remediation,
         ),
     ]
     for flag in REQUIRED_CLAUDE_FLAGS:
+        flag_missing = flag in claude_capability.missing_flags
         checks.append(
             DoctorCheck(
                 flag,
-                claude_capability.available and flag not in claude_capability.missing_flags,
+                claude_capability.available and not flag_missing,
                 "error",
                 "Runtime Readiness",
                 f"claude supports {flag}",
+                remediation=claude_capability.remediation if flag_missing else None,
             )
         )
     checks.extend(
@@ -169,6 +179,7 @@ def run_doctor(
                 "warning",
                 "Install Readiness",
                 "bin dir is on PATH",
+                remediation=f"Add {paths.bin_path.parent} to PATH or open a new shell session.",
             ),
             DoctorCheck(
                 "git",
@@ -176,6 +187,7 @@ def run_doctor(
                 "warning",
                 "Enhanced Safety Capability",
                 "git command available",
+                remediation=None if git_capability.git_available else git_capability.remediation,
             ),
             DoctorCheck(
                 "git-mode",
@@ -187,6 +199,11 @@ def run_doctor(
                     if git_capability.mode == "git-aware"
                     else "filesystem-only mode active"
                 ),
+                remediation=(
+                    None
+                    if git_capability.mode == "git-aware"
+                    else git_capability.remediation
+                ),
             ),
             DoctorCheck(
                 "git-worktree",
@@ -194,6 +211,11 @@ def run_doctor(
                 "warning",
                 "Enhanced Safety Capability",
                 "git worktree available",
+                remediation=(
+                    None
+                    if git_capability.worktree_usable or not git_capability.repo
+                    else git_capability.remediation
+                ),
             ),
         ]
     )
@@ -218,6 +240,8 @@ def render_doctor_report(report: DoctorReport) -> str:
             else:
                 prefix = "[fail]"
             lines.append(f"{prefix} {check.name}: {check.detail}")
+            if not check.ok and check.remediation:
+                lines.append(f"  -> {check.remediation}")
         if index != len(sections) - 1:
             lines.append("")
     return "\n".join(lines) + "\n"
