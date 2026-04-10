@@ -46,23 +46,58 @@ def _default_flag_probe(flag: str) -> bool:
     return flag in help_text or (flag == "--print" and "-p" in help_text)
 
 
+def _resolve_python_runtime(
+    exists: Callable[[str], bool],
+    os_name: str,
+) -> str | None:
+    candidates = ("py", "python", "python3") if os_name == "nt" else ("python3", "python")
+    for candidate in candidates:
+        if exists(candidate):
+            return candidate
+    return None
+
+
+def _normalize_path_entry(value: str, os_name: str) -> str:
+    normalized = value.strip()
+    if os_name == "nt":
+        return normalized.rstrip("\\/").lower()
+    return normalized.rstrip("/")
+
+
 def run_doctor(
     command_exists: Callable[[str], bool] | None = None,
     flag_probe: Callable[[str], bool] | None = None,
     writable_probe: Callable[[Path], bool] | None = None,
     path_probe: Callable[[str], bool] | None = None,
+    os_name: str | None = None,
 ) -> DoctorReport:
+    current_os = os.name if os_name is None else os_name
     exists = command_exists or (lambda name: shutil.which(name) is not None)
     claude_exists = exists("claude")
+    python_runtime = _resolve_python_runtime(exists, current_os)
     flag_ok = flag_probe or _default_flag_probe
     writable = writable_probe or _default_writable_probe
+    path_separator = ";" if current_os == "nt" else os.pathsep
+    paths = resolve_paths(os_name=current_os)
+    normalized_bin_dir = _normalize_path_entry(str(paths.bin_path.parent), current_os)
     path_contains = path_probe or (
-        lambda value: value in os.environ.get("PATH", "").split(os.pathsep)
+        lambda value: any(
+            _normalize_path_entry(entry, current_os) == _normalize_path_entry(value, current_os)
+            for entry in os.environ.get("PATH", "").split(path_separator)
+            if entry
+        )
     )
-    paths = resolve_paths()
     checks = [
         DoctorCheck("git", exists("git"), "git command available"),
-        DoctorCheck("python3", exists("python3"), "python3 command available"),
+        DoctorCheck(
+            "python",
+            python_runtime is not None,
+            (
+                f"python runtime available ({python_runtime})"
+                if python_runtime
+                else "python runtime available"
+            ),
+        ),
         DoctorCheck("claude", claude_exists, "claude command available"),
         DoctorCheck("ccollab", exists("ccollab"), "ccollab command available"),
     ]
@@ -82,7 +117,7 @@ def run_doctor(
             DoctorCheck("task-root", writable(paths.task_root.parent), "task root writable"),
             DoctorCheck(
                 "path",
-                path_contains(str(paths.bin_path.parent)),
+                path_contains(normalized_bin_dir),
                 "bin dir is on PATH",
             ),
         ]

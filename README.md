@@ -3,7 +3,7 @@
 Current installer support:
 
 - `macOS / Linux`: supported
-- `Windows`: use WSL for now; native PowerShell / CMD install is not supported yet
+- `Windows`: supported with native PowerShell / CMD, WSL not required
 
 macOS / Linux:
 
@@ -11,6 +11,15 @@ macOS / Linux:
 git clone <repo-url> ~/workspace/cc_collab
 cd ~/workspace/cc_collab
 ./install/install-all.sh
+ccollab doctor
+```
+
+Windows PowerShell:
+
+```powershell
+git clone <repo-url> $HOME\workspace\cc_collab
+Set-Location $HOME\workspace\cc_collab
+powershell -ExecutionPolicy Bypass -File ./install/install-all.ps1
 ccollab doctor
 ```
 
@@ -25,6 +34,14 @@ source ~/.zprofile
 ccollab doctor
 ```
 
+If `ccollab` is not resolved in PowerShell yet, open a new terminal or refresh the current session:
+
+```powershell
+$env:Path = "$HOME\.local\bin;$env:Path"
+Get-Command ccollab
+ccollab doctor
+```
+
 Fallback from the repo checkout:
 
 ```bash
@@ -32,13 +49,21 @@ cd ~/workspace/cc_collab
 python3 -m runtime.cli doctor
 ```
 
+```powershell
+Set-Location ~/workspace/cc_collab
+py -3 -m runtime.cli doctor
+```
+
+If `py` is unavailable, replace it with `python`.
+
 ## What Gets Installed
 
-- Skill symlink: `$CODEX_HOME/skills/delegate-to-claude-code` (or `~/.codex/skills/delegate-to-claude-code`)
-- CLI symlink: `~/.local/bin/ccollab`
+- macOS / Linux: skill symlink at `$CODEX_HOME/skills/delegate-to-claude-code` (or `~/.codex/skills/delegate-to-claude-code`), plus CLI symlink at `~/.local/bin/ccollab`
+- Windows: skill copy at `%CODEX_HOME%\skills\delegate-to-claude-code` (or `%USERPROFILE%\.codex\skills\delegate-to-claude-code`), plus CLI shim at `%USERPROFILE%\.local\bin\ccollab.cmd`
 
 ## Troubleshooting
 
 - `ccollab: command not found`: ensure `~/.local/bin` is in your `PATH`.
-- Skill not discovered: verify `CODEX_HOME` and symlink target with `ls -l ~/.codex/skills/delegate-to-claude-code`.
-- Doctor failures: run `python3 -m runtime.cli doctor` for actionable findings.
+- Windows `ccollab` not found: run `Get-Command ccollab` after refreshing `$env:Path`, or open a new PowerShell session.
+- Skill not discovered: verify `CODEX_HOME` and the installed skill directory under `~/.codex/skills/delegate-to-claude-code`.
+- Doctor failures: run `python3 -m runtime.cli doctor` on macOS / Linux, or `py -3 -m runtime.cli doctor` on Windows.

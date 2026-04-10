@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest import TestCase
 from unittest.mock import patch
 
@@ -38,3 +38,31 @@ class ConfigTests(TestCase):
                 resolve_claude_model({"claude_role": {}}),
                 "claude-opus-4-6",
             )
+
+    def test_resolve_paths_uses_windows_conventions(self) -> None:
+        paths = resolve_paths(
+            env={
+                "USERPROFILE": r"C:\Users\steven",
+                "APPDATA": r"C:\Users\steven\AppData\Roaming",
+            },
+            os_name="nt",
+            path_factory=PureWindowsPath,
+        )
+        self.assertEqual(
+            paths.skill_dir,
+            PureWindowsPath(
+                r"C:\Users\steven\.codex\skills\delegate-to-claude-code"
+            ),
+        )
+        self.assertEqual(
+            paths.bin_path,
+            PureWindowsPath(r"C:\Users\steven\.local\bin\ccollab.cmd"),
+        )
+        self.assertEqual(
+            paths.config_dir,
+            PureWindowsPath(r"C:\Users\steven\AppData\Roaming\cc_collab"),
+        )
+        self.assertEqual(
+            paths.task_root,
+            PureWindowsPath(r"C:\Users\steven\workspace\cc_collab\tasks"),
+        )

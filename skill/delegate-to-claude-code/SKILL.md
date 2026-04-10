@@ -33,9 +33,19 @@ Do not delegate automatically when:
 
 Before exploring docs or building a request:
 
+macOS / Linux:
+
 ```bash
 command -v ccollab >/dev/null 2>&1 || source ~/.zprofile
 ccollab doctor || (cd ~/workspace/cc_collab && python3 -m runtime.cli doctor)
+```
+
+Windows PowerShell:
+
+```powershell
+if (-not (Get-Command ccollab -ErrorAction SilentlyContinue)) { $env:Path = "$HOME\.local\bin;$env:Path" }
+ccollab doctor
+if ($LASTEXITCODE -ne 0) { Set-Location ~/workspace/cc_collab; py -3 -m runtime.cli doctor }
 ```
 
 If `ccollab` is still unavailable, use the repository entrypoint directly from `~/workspace/cc_collab`:
@@ -44,6 +54,13 @@ If `ccollab` is still unavailable, use the repository entrypoint directly from `
 cd ~/workspace/cc_collab
 python3 -m runtime.cli run --request /path/to/request.json
 ```
+
+```powershell
+Set-Location ~/workspace/cc_collab
+py -3 -m runtime.cli run --request C:\path\to\request.json
+```
+
+If `py` is unavailable on Windows, use `python` instead.
 
 Prefer this bootstrap sequence over ad-hoc repo exploration.
 

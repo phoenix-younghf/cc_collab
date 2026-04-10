@@ -3,12 +3,16 @@
 Platform note:
 
 - `macOS / Linux`: supported
-- `Windows`: use WSL for now; native PowerShell / CMD install is not supported yet
+- `Windows`: supported with native PowerShell / CMD, WSL not required
 
 Install:
 
 ```bash
 ./install/install-all.sh
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File ./install/install-all.ps1
 ```
 
 Verify:
@@ -22,3 +26,9 @@ If verification fails, run:
 ```bash
 python3 -m runtime.cli doctor
 ```
+
+```powershell
+py -3 -m runtime.cli doctor
+```
+
+If `py` is unavailable, use `python`.
