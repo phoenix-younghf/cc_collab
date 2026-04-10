@@ -18,8 +18,8 @@ class ConfigTests(TestCase):
                 "XDG_CONFIG_HOME": "/tmp/xdg-config",
             },
             clear=True,
-        ), patch("runtime.config.platform.system", return_value="Linux"):
-            paths = resolve_paths()
+        ):
+            paths = resolve_paths(platform_system_name="Linux")
         self.assertEqual(
             paths.skill_dir,
             Path("/tmp/codex-home/skills/delegate-to-claude-code"),
@@ -77,19 +77,19 @@ class ConfigTests(TestCase):
         )
 
     def test_resolve_paths_uses_macos_install_root(self) -> None:
-        with patch("runtime.config.platform.system", return_value="Darwin"):
-            paths = resolve_paths(
-                env={"HOME": "/Users/steven"},
-                os_name="posix",
-            )
+        paths = resolve_paths(
+            env={"HOME": "/Users/steven"},
+            os_name="posix",
+            platform_system_name="Darwin",
+        )
         expected = Path("/Users/steven/Library/Application Support/cc_collab/install")
         self.assertEqual(paths.install_root, expected)
 
     def test_resolve_paths_uses_linux_install_root_when_not_macos(self) -> None:
-        with patch("runtime.config.platform.system", return_value="Linux"):
-            paths = resolve_paths(
-                env={"HOME": "/home/steven"},
-                os_name="posix",
-            )
+        paths = resolve_paths(
+            env={"HOME": "/home/steven"},
+            os_name="posix",
+            platform_system_name="Linux",
+        )
         expected = Path("/home/steven/.local/share/cc_collab/install")
         self.assertEqual(paths.install_root, expected)

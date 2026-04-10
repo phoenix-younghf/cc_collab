@@ -53,12 +53,14 @@ def _resolve_install_root(
     target_os: str,
     home: PurePath,
     factory: type[PurePath],
+    platform_system_name: str | None,
 ) -> PurePath:
     if target_os == "nt":
         local_app_data = env.get("LOCALAPPDATA", "").strip()
         base = factory(local_app_data) if local_app_data else home / "AppData" / "Local"
         return base / "cc_collab" / "install"
-    if platform.system() == "Darwin":
+    system_name = platform.system() if platform_system_name is None else platform_system_name
+    if system_name == "Darwin":
         return home / "Library" / "Application Support" / "cc_collab" / "install"
     return home / ".local" / "share" / "cc_collab" / "install"
 
@@ -67,6 +69,7 @@ def resolve_paths(
     env: Mapping[str, str] | None = None,
     os_name: str | None = None,
     path_factory: type[PurePath] | None = None,
+    platform_system_name: str | None = None,
 ) -> ResolvedPaths:
     current_env = os.environ if env is None else env
     target_os = os.name if os_name is None else os_name
@@ -77,6 +80,7 @@ def resolve_paths(
         target_os=target_os,
         home=home,
         factory=factory,
+        platform_system_name=platform_system_name,
     )
     codex_home = (
         factory(current_env["CODEX_HOME"])
