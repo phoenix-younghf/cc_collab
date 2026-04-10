@@ -8,7 +8,7 @@ if defined CCOLLAB_RUNTIME_ROOT (
 )
 
 set "PYTHON_LAUNCHER="
-call :try_python py -3.9
+call :try_python py -3
 if not defined PYTHON_LAUNCHER call :try_python python
 if not defined PYTHON_LAUNCHER call :try_python python3
 

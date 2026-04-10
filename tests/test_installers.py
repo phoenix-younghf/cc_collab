@@ -413,6 +413,14 @@ class InstallerTests(TestCase):
             self.assertIn("ARGS=-c", python_log)
             self.assertIn("install python", result.stderr.lower())
 
+    def test_windows_scripts_use_py_default_python3_channel(self) -> None:
+        launcher = (REPO_ROOT / "bin" / "ccollab.cmd").read_text(encoding="utf-8")
+        installer = (REPO_ROOT / "install" / "install-all.ps1").read_text(encoding="utf-8")
+        self.assertIn("call :try_python py -3", launcher)
+        self.assertNotIn("py -3.9", launcher)
+        self.assertIn('@("py", "-3")', installer)
+        self.assertNotIn('-3.9', installer)
+
     def test_unix_bootstrap_surfaces_manual_guidance_when_python_and_brew_are_missing(self) -> None:
         with TemporaryDirectory() as tmp:
             result = run_install_all_sh_without_python(

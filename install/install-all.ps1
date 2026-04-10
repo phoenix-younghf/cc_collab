@@ -39,7 +39,7 @@ function Test-PythonCommand {
 
 function Find-PythonCommand {
     $candidates = @(
-        @("py", "-3.9"),
+        @("py", "-3"),
         @("python"),
         @("python3")
     )
