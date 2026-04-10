@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from runtime.capabilities import (
+    detect_claude_capabilities,
+    detect_git_capabilities,
+    detect_python_launcher,
+)
 from runtime.config import resolve_paths
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
 
@@ -15,6 +20,8 @@ from runtime.constants import REQUIRED_CLAUDE_FLAGS
 class DoctorCheck:
     name: str
     ok: bool
+    severity: str
+    section: str
     detail: str
 
 
@@ -35,27 +42,20 @@ def _default_writable_probe(path: Path) -> bool:
         return False
 
 
-def _default_flag_probe(flag: str) -> bool:
-    help_result = subprocess.run(
-        ["claude", "--help"],
+def _default_launcher_probe() -> tuple[bool, str]:
+    launcher = shutil.which("ccollab")
+    if launcher is None:
+        return False, "launcher not found on PATH"
+    result = subprocess.run(
+        ["ccollab", "--help"],
         text=True,
         capture_output=True,
         check=False,
     )
-    help_text = (help_result.stdout or "") + "\n" + (help_result.stderr or "")
-    return flag in help_text or (flag == "--print" and "-p" in help_text)
-
-
-def _resolve_python_runtime(
-    exists: Callable[[str], bool],
-    os_name: str,
-) -> str | None:
-    candidates = ("py", "python", "python3") if os_name == "nt" else ("python3", "python")
-    for candidate in candidates:
-        if exists(candidate):
-            return candidate
-    return None
-
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip() or "launcher invocation failed"
+        return False, detail
+    return True, "launcher ok"
 
 def _normalize_path_entry(value: str, os_name: str) -> str:
     normalized = value.strip()
@@ -69,14 +69,22 @@ def run_doctor(
     flag_probe: Callable[[str], bool] | None = None,
     writable_probe: Callable[[Path], bool] | None = None,
     path_probe: Callable[[str], bool] | None = None,
+    launcher_probe: Callable[[], tuple[bool, str]] | None = None,
     os_name: str | None = None,
 ) -> DoctorReport:
     current_os = os.name if os_name is None else os_name
     exists = command_exists or (lambda name: shutil.which(name) is not None)
-    claude_exists = exists("claude")
-    python_runtime = _resolve_python_runtime(exists, current_os)
-    flag_ok = flag_probe or _default_flag_probe
+    python_runtime = detect_python_launcher(os_name=current_os, command_exists=exists)
+    claude_capability = detect_claude_capabilities(
+        command_exists=exists,
+        flag_probe=flag_probe,
+    )
+    git_capability = detect_git_capabilities(
+        workdir=Path.cwd(),
+        command_exists=exists,
+    )
     writable = writable_probe or _default_writable_probe
+    probe_launcher = launcher_probe or _default_launcher_probe
     path_separator = ";" if current_os == "nt" else os.pathsep
     paths = resolve_paths(os_name=current_os)
     normalized_bin_dir = _normalize_path_entry(str(paths.bin_path.parent), current_os)
@@ -87,49 +95,129 @@ def run_doctor(
             if entry
         )
     )
+    launcher_ok, launcher_detail = probe_launcher()
     checks = [
-        DoctorCheck("git", exists("git"), "git command available"),
         DoctorCheck(
             "python",
             python_runtime is not None,
+            "error",
+            "Install Readiness",
             (
                 f"python runtime available ({python_runtime})"
                 if python_runtime
                 else "python runtime available"
             ),
         ),
-        DoctorCheck("claude", claude_exists, "claude command available"),
-        DoctorCheck("ccollab", exists("ccollab"), "ccollab command available"),
+        DoctorCheck(
+            "launcher",
+            launcher_ok,
+            "error",
+            "Install Readiness",
+            launcher_detail,
+        ),
+        DoctorCheck(
+            "claude",
+            claude_capability.available,
+            "error",
+            "Runtime Readiness",
+            "claude command available",
+        ),
     ]
     for flag in REQUIRED_CLAUDE_FLAGS:
         checks.append(
             DoctorCheck(
                 flag,
-                claude_exists and flag_ok(flag),
+                claude_capability.available and flag not in claude_capability.missing_flags,
+                "error",
+                "Runtime Readiness",
                 f"claude supports {flag}",
             )
         )
     checks.extend(
         [
-            DoctorCheck("skill-dir", writable(paths.skill_dir.parent), "skill dir writable"),
-            DoctorCheck("bin-dir", writable(paths.bin_path.parent), "bin dir writable"),
-            DoctorCheck("config-dir", writable(paths.config_dir.parent), "config dir writable"),
-            DoctorCheck("task-root", writable(paths.task_root.parent), "task root writable"),
+            DoctorCheck(
+                "skill-dir",
+                writable(paths.skill_dir.parent),
+                "error",
+                "Install Readiness",
+                "skill dir writable",
+            ),
+            DoctorCheck(
+                "bin-dir",
+                writable(paths.bin_path.parent),
+                "error",
+                "Install Readiness",
+                "bin dir writable",
+            ),
+            DoctorCheck(
+                "config-dir",
+                writable(paths.config_dir.parent),
+                "error",
+                "Install Readiness",
+                "config dir writable",
+            ),
+            DoctorCheck(
+                "task-root",
+                writable(paths.task_root.parent),
+                "error",
+                "Install Readiness",
+                "task root writable",
+            ),
             DoctorCheck(
                 "path",
                 path_contains(normalized_bin_dir),
+                "warning",
+                "Install Readiness",
                 "bin dir is on PATH",
+            ),
+            DoctorCheck(
+                "git",
+                git_capability.git_available,
+                "warning",
+                "Enhanced Safety Capability",
+                "git command available",
+            ),
+            DoctorCheck(
+                "git-mode",
+                git_capability.mode == "git-aware",
+                "warning",
+                "Enhanced Safety Capability",
+                (
+                    "git-aware mode available"
+                    if git_capability.mode == "git-aware"
+                    else "filesystem-only mode active"
+                ),
+            ),
+            DoctorCheck(
+                "git-worktree",
+                not git_capability.git_available or not git_capability.repo or git_capability.worktree_usable,
+                "warning",
+                "Enhanced Safety Capability",
+                "git worktree available",
             ),
         ]
     )
-    return DoctorReport(ok=all(check.ok for check in checks), checks=checks)
+    return DoctorReport(
+        ok=all(check.ok or check.severity != "error" for check in checks),
+        checks=checks,
+    )
 
 
 def render_doctor_report(report: DoctorReport) -> str:
-    lines = [
-        "Doctor status: OK" if report.ok else "Doctor status: FAIL",
-    ]
-    for check in report.checks:
-        prefix = "[ok]" if check.ok else "[fail]"
-        lines.append(f"{prefix} {check.name}: {check.detail}")
+    lines = ["Doctor status: OK" if report.ok else "Doctor status: FAIL", ""]
+    sections = ["Install Readiness", "Runtime Readiness", "Enhanced Safety Capability"]
+    for index, section in enumerate(sections):
+        lines.append(section)
+        for check in report.checks:
+            if check.section != section:
+                continue
+            if check.ok:
+                prefix = "[ok]"
+            elif check.severity == "warning":
+                prefix = "[warn]"
+            else:
+                prefix = "[fail]"
+            lines.append(f"{prefix} {check.name}: {check.detail}")
+        if index != len(sections) - 1:
+            lines.append("")
     return "\n".join(lines) + "\n"
