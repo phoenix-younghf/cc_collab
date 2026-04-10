@@ -49,6 +49,7 @@ The project is successful when all of the following are true:
 5. If `Git` is missing or the target directory is not a Git repo, `ccollab run` still works in a supported degraded mode.
 6. Task artifacts clearly record whether execution used Git-aware safety features or filesystem-only fallbacks.
 7. The runtime behavior is primarily defined in `runtime/`, not spread across shell-specific scripts.
+8. Installation must work from a source archive or source checkout, not only from a Git clone.
 
 ## Product Contract
 
@@ -60,6 +61,7 @@ The project is successful when all of the following are true:
 4. `Git` is an optional capability. When available, it enables stronger safety and cleaner closeout artifacts. When unavailable, `ccollab` still runs through a filesystem-only mode.
 5. Windows PowerShell/CMD and macOS shells are supported execution environments, not fallback environments.
 6. Launchers must stay thin. Platform-specific business logic belongs in Python, not in shell or batch files.
+7. User installation must target a self-contained install root so runtime execution does not depend on preserving a Git checkout.
 
 ## Current State
 
@@ -83,6 +85,23 @@ The gaps are structural:
 
 The design keeps the current repository shape but changes responsibility boundaries.
 
+### Distribution Model
+
+`ccollab` must support two source forms for installation:
+
+- source checkout
+- extracted source archive
+
+The supported end-user installation shape is a copied runtime payload under a user-owned install root. Installers may be launched from a checkout or an extracted archive, but after installation the launcher must target the installed runtime root rather than the original source location.
+
+Platform install roots:
+
+- Windows: `%LOCALAPPDATA%\\cc_collab\\install`
+- macOS: `~/Library/Application Support/cc_collab/install`
+- Unix fallback: `~/.local/share/cc_collab/install`
+
+This keeps Git optional for installation and avoids making launchers depend on a long-lived repository checkout.
+
 ### 1. Bootstrap Layer
 
 Bootstrap remains platform-native:
@@ -102,7 +121,7 @@ Launchers stay intentionally minimal:
 Responsibilities:
 
 - locate a usable Python runtime
-- resolve the repository root or installed runtime root
+- resolve the installed runtime root
 - forward all arguments to `python -m runtime.cli`
 
 Non-responsibilities:
@@ -170,16 +189,18 @@ The install flow is:
 
 1. Detect whether a usable Python runtime already exists.
 2. If Python is missing, attempt supported platform-native acquisition.
-3. Install the Codex skill.
-4. Install the platform launcher into the user-facing bin location.
-5. Refresh current-session PATH where possible.
-6. Run `ccollab doctor`.
+3. Copy the `ccollab` runtime payload into the platform install root.
+4. Install the Codex skill.
+5. Install the platform launcher into the user-facing bin location.
+6. Refresh current-session PATH where possible.
+7. Run `ccollab doctor`.
 
 Behavioral rules:
 
 - installer success means `ccollab` itself was installed correctly
 - missing `claude` does not invalidate installation, but must be surfaced immediately by `doctor`
 - installer output must distinguish bootstrap failure from downstream runtime readiness failure
+- installer behavior must not depend on `.git` metadata being present in the source tree
 
 ## Doctor Model
 
@@ -226,9 +247,12 @@ Capabilities:
 
 - dirty workspace detection
 - Git HEAD capture
-- `git worktree` isolated execution when required
 - Git diff / patch-based closeout artifacts
 - Git-backed change auditing
+
+Optional sub-capability:
+
+- `git worktree` isolation when it is available and usable
 
 ### Filesystem-Only Mode
 
@@ -246,6 +270,24 @@ Capabilities:
 
 This is a first-class supported mode, not an error fallback.
 
+## Git Capability Matrix
+
+Mode selection must treat Git features as a small capability matrix rather than a single boolean.
+
+| `git` available | workdir is a Git repo | `git worktree` usable | Selected mode | Isolation for `write-isolated` | Closeout |
+|---|---|---|---|---|---|
+| no | no or unknown | no | `filesystem-only` | task-owned filesystem copy | file change set |
+| yes | no | no or unknown | `filesystem-only` | task-owned filesystem copy | file change set |
+| yes | yes | no | `git-aware` with degraded isolation | task-owned filesystem copy | Git patch |
+| yes | yes | yes | full `git-aware` | Git worktree | Git patch |
+
+Rules:
+
+- lack of `git worktree` does not disable Git-aware mode if Git repo state and Git diff features are still usable
+- when `git worktree` is unavailable, only the isolation strategy degrades
+- `doctor` should surface missing `git worktree` as a warning when Git repo mode is otherwise available
+- `run` preflight must detect and record this capability before choosing the isolation method
+
 ## Run Preflight
 
 Before invoking Claude, `run` must execute a lightweight preflight.
@@ -258,6 +300,7 @@ Preflight checks:
 - task root writable
 - workdir exists
 - Git capability detection and mode selection completed
+- `git worktree` usability detected before any isolated Git execution is attempted
 
 If a hard dependency fails, `run` must abort before task execution and persist a failure artifact with actionable remediation text.
 
@@ -366,6 +409,15 @@ The test suite must prove native task execution, not just documentation correctn
 6. End-to-end smoke tests
    - Windows semantics from request to result artifact
    - macOS/Unix semantics from request to result artifact
+
+### Validation Gate
+
+Native platform CI is preferred but not required for this phase. The minimum acceptable gate is:
+
+- automated unit and smoke coverage in the main test suite
+- documented manual smoke validation on real Windows and macOS environments for install, doctor, and run
+
+If native CI is added later, it strengthens the gate but does not change the product contract defined here.
 
 ## Likely Implementation Surface
 
