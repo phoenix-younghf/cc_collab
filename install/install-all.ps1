@@ -30,7 +30,7 @@ function Test-PythonCommand {
         if ($Command.Length -gt 1) {
             $commandArgs = $Command[1..($Command.Length - 1)]
         }
-        & $commandName @commandArgs "-c" "import sys; raise SystemExit(0 if sys.version_info >= (3, 0) else 1)" | Out-Null
+        & $commandName @commandArgs "-c" "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" | Out-Null
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
@@ -39,7 +39,7 @@ function Test-PythonCommand {
 
 function Find-PythonCommand {
     $candidates = @(
-        @("py", "-3"),
+        @("py", "-3.9"),
         @("python"),
         @("python3")
     )
@@ -63,7 +63,7 @@ function Install-Python {
         }
         Write-Stderr "winget install Python failed."
     }
-    Write-Stderr "Install Python 3 and rerun .\install\install-all.ps1. If winget is available, try: winget install --exact --id Python.Python.3"
+    Write-Stderr "Install Python 3.9 or newer and rerun .\install\install-all.ps1. If winget is available, try: winget install --exact --id Python.Python.3"
 }
 
 function Copy-Payload {

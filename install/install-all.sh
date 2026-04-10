@@ -14,7 +14,7 @@ resolve_install_root() {
 python_works() {
   local candidate="$1"
   command -v "$candidate" >/dev/null 2>&1 || return 1
-  "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 0) else 1)" \
+  "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" \
     >/dev/null 2>&1
 }
 
@@ -37,7 +37,7 @@ install_python() {
     fi
     echo "brew install python failed." >&2
   fi
-  echo "Install Python 3 and re-run ./install/install-all.sh." >&2
+  echo "Install Python 3.9 or newer and re-run ./install/install-all.sh." >&2
   echo "If you use Homebrew, run: brew install python" >&2
   return 1
 }

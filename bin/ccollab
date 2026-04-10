@@ -7,16 +7,23 @@ else
   ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
+python_works() {
+  local candidate="$1"
+  command -v "$candidate" >/dev/null 2>&1 || return 1
+  "$candidate" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)" \
+    >/dev/null 2>&1
+}
+
 PYTHON=""
 for candidate in python3 python; do
-  if command -v "$candidate" >/dev/null 2>&1; then
+  if python_works "$candidate"; then
     PYTHON="$candidate"
     break
   fi
 done
 
 if [[ -z "$PYTHON" ]]; then
-  echo "Unable to find Python. Install Python 3 and ensure python3 or python is on PATH." >&2
+  echo "Unable to find Python 3.9+. Install Python 3.9 or newer and ensure python3 or python is on PATH." >&2
   exit 1
 fi
 

@@ -33,12 +33,15 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _make_fake_python(bin_dir: Path) -> Path:
+def _make_fake_python(bin_dir: Path, *, supported: bool = True) -> Path:
     log_path = bin_dir / "fake-python.log"
     script = f"""#!{BASH}
 set -euo pipefail
 printf 'ARGS=%s\\n' "$*" >>"${{CCOLLAB_FAKE_PYTHON_LOG}}"
 printf 'PYTHONPATH=%s\\n' "${{PYTHONPATH-}}" >>"${{CCOLLAB_FAKE_PYTHON_LOG}}"
+if [ "${{1-}}" = "-c" ]; then
+    exit {0 if supported else 1}
+fi
 if [ "${{1-}}" = "-m" ] && [ "${{2-}}" = "runtime.cli" ] && [ "${{3-}}" = "doctor" ]; then
     printf '%b' "${{CCOLLAB_FAKE_DOCTOR_STDOUT:-Doctor status: OK\\n}}"
     exit "${{CCOLLAB_FAKE_DOCTOR_EXIT:-0}}"
@@ -123,6 +126,7 @@ def _run_install_all_sh(
     temp_root: Path,
     source_root: Path,
     with_python: bool,
+    fake_python_supported: bool = True,
     fake_brew: bool = False,
     brew_succeeds: bool = False,
     fake_doctor_exit: int = 0,
@@ -132,7 +136,7 @@ def _run_install_all_sh(
     home.mkdir(parents=True, exist_ok=True)
     bin_dir.mkdir(parents=True, exist_ok=True)
     if with_python:
-        log_path = _make_fake_python(bin_dir)
+        log_path = _make_fake_python(bin_dir, supported=fake_python_supported)
     else:
         log_path = bin_dir / "fake-python.log"
         _make_missing_python_shims(bin_dir)
@@ -160,6 +164,7 @@ def run_install_script_with_fake_python(
     *,
     temp_root: str,
     source_root: Path | None = None,
+    fake_python_supported: bool = True,
     fake_doctor_exit: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     root = REPO_ROOT if source_root is None else source_root
@@ -167,6 +172,7 @@ def run_install_script_with_fake_python(
         temp_root=Path(temp_root),
         source_root=root,
         with_python=True,
+        fake_python_supported=fake_python_supported,
         fake_doctor_exit=fake_doctor_exit,
     )
 
@@ -390,6 +396,21 @@ class InstallerTests(TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("brew", result.stdout.lower())
+            self.assertIn("install python", result.stderr.lower())
+
+    def test_unix_bootstrap_rejects_unsupported_python_version(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result = _run_install_all_sh(
+                temp_root=Path(tmp),
+                source_root=REPO_ROOT,
+                with_python=True,
+                fake_python_supported=False,
+                fake_brew=True,
+                brew_succeeds=False,
+            )
+            python_log = (Path(tmp) / "bin" / "fake-python.log").read_text(encoding="utf-8")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("ARGS=-c", python_log)
             self.assertIn("install python", result.stderr.lower())
 
     def test_unix_bootstrap_surfaces_manual_guidance_when_python_and_brew_are_missing(self) -> None:
