@@ -43,12 +43,14 @@ def _default_writable_probe(path: Path) -> bool:
         return False
 
 
-def _default_launcher_probe() -> tuple[bool, str]:
-    launcher = shutil.which("ccollab")
-    if launcher is None:
-        return False, "launcher not found on PATH"
+def _default_launcher_probe(launcher_path: Path, os_name: str) -> tuple[bool, str]:
+    if not launcher_path.exists():
+        return False, f"launcher not found at {launcher_path}"
+    command = [str(launcher_path), "--help"]
+    if os_name == "nt":
+        command = ["cmd", "/c", str(launcher_path), "--help"]
     result = subprocess.run(
-        ["ccollab", "--help"],
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -85,9 +87,11 @@ def run_doctor(
         command_exists=exists,
     )
     writable = writable_probe or _default_writable_probe
-    probe_launcher = launcher_probe or _default_launcher_probe
     path_separator = ";" if current_os == "nt" else os.pathsep
     paths = resolve_paths(os_name=current_os)
+    probe_launcher = launcher_probe or (
+        lambda: _default_launcher_probe(Path(paths.bin_path), current_os)
+    )
     normalized_bin_dir = _normalize_path_entry(str(paths.bin_path.parent), current_os)
     path_contains = path_probe or (
         lambda value: any(

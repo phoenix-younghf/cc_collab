@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import stat
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 from unittest import TestCase
 
+from runtime.config import ResolvedPaths
 from runtime.doctor import render_doctor_report, run_doctor
 
 
@@ -83,6 +87,36 @@ class DoctorTests(TestCase):
             path_probe=lambda _value: False,
             launcher_probe=lambda: (True, "launcher ok"),
         )
+        self.assertTrue(report.ok)
+        self.assertTrue(
+            any(check.name == "path" and check.severity == "warning" for check in report.checks)
+        )
+
+    def test_doctor_default_launcher_probe_uses_installed_path_not_path_lookup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            launcher = tmp_path / "bin" / "ccollab"
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            launcher.chmod(launcher.stat().st_mode | stat.S_IXUSR)
+            fake_paths = ResolvedPaths(
+                install_root=tmp_path / "install",
+                runtime_root=tmp_path / "install",
+                skill_dir=tmp_path / ".codex" / "skills" / "delegate-to-claude-code",
+                bin_path=launcher,
+                config_dir=tmp_path / ".config" / "cc_collab",
+                task_root=tmp_path / "tasks",
+            )
+            with patch("runtime.doctor.resolve_paths", return_value=fake_paths), patch(
+                "runtime.doctor.shutil.which",
+                return_value=None,
+            ):
+                report = run_doctor(
+                    command_exists=lambda name: name != "ccollab",
+                    flag_probe=lambda _flag: True,
+                    writable_probe=lambda _path: True,
+                    path_probe=lambda _value: False,
+                )
         self.assertTrue(report.ok)
         self.assertTrue(
             any(check.name == "path" and check.severity == "warning" for check in report.checks)
