@@ -49,12 +49,15 @@ def _default_launcher_probe(launcher_path: Path, os_name: str) -> tuple[bool, st
     command = [str(launcher_path), "--help"]
     if os_name == "nt":
         command = ["cmd", "/c", str(launcher_path), "--help"]
-    result = subprocess.run(
-        command,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        return False, str(exc)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip() or "launcher invocation failed"
         return False, detail

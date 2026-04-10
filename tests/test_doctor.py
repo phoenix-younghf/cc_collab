@@ -122,6 +122,35 @@ class DoctorTests(TestCase):
             any(check.name == "path" and check.severity == "warning" for check in report.checks)
         )
 
+    def test_doctor_default_launcher_probe_reports_non_executable_launcher(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            launcher = tmp_path / "bin" / "ccollab"
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            fake_paths = ResolvedPaths(
+                install_root=tmp_path / "install",
+                runtime_root=tmp_path / "install",
+                skill_dir=tmp_path / ".codex" / "skills" / "delegate-to-claude-code",
+                bin_path=launcher,
+                config_dir=tmp_path / ".config" / "cc_collab",
+                task_root=tmp_path / "tasks",
+            )
+            with patch("runtime.doctor.resolve_paths", return_value=fake_paths), patch(
+                "runtime.doctor.shutil.which",
+                return_value=None,
+            ):
+                report = run_doctor(
+                    command_exists=lambda name: name != "ccollab",
+                    flag_probe=lambda _flag: True,
+                    writable_probe=lambda _path: True,
+                    path_probe=lambda _value: True,
+                )
+        self.assertFalse(report.ok)
+        self.assertTrue(
+            any(check.name == "launcher" and check.severity == "error" for check in report.checks)
+        )
+
     def test_doctor_renders_readiness_sections(self) -> None:
         report = run_doctor(
             command_exists=lambda _name: True,
