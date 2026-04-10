@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import platform
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
@@ -10,6 +11,8 @@ from runtime.constants import DEFAULT_CLAUDE_MODEL
 
 @dataclass(frozen=True)
 class ResolvedPaths:
+    install_root: PurePath
+    runtime_root: PurePath
     skill_dir: PurePath
     bin_path: PurePath
     config_dir: PurePath
@@ -44,6 +47,22 @@ def _resolve_home(env: Mapping[str, str], target_os: str) -> str:
     return str(Path.home())
 
 
+def _resolve_install_root(
+    *,
+    env: Mapping[str, str],
+    target_os: str,
+    home: PurePath,
+    factory: type[PurePath],
+) -> PurePath:
+    if target_os == "nt":
+        local_app_data = env.get("LOCALAPPDATA", "").strip()
+        base = factory(local_app_data) if local_app_data else home / "AppData" / "Local"
+        return base / "cc_collab" / "install"
+    if platform.system() == "Darwin":
+        return home / "Library" / "Application Support" / "cc_collab" / "install"
+    return home / ".local" / "share" / "cc_collab" / "install"
+
+
 def resolve_paths(
     env: Mapping[str, str] | None = None,
     os_name: str | None = None,
@@ -53,6 +72,12 @@ def resolve_paths(
     target_os = os.name if os_name is None else os_name
     factory = _resolve_path_factory(target_os, path_factory)
     home = factory(_resolve_home(current_env, target_os))
+    install_root = _resolve_install_root(
+        env=current_env,
+        target_os=target_os,
+        home=home,
+        factory=factory,
+    )
     codex_home = (
         factory(current_env["CODEX_HOME"])
         if current_env.get("CODEX_HOME")
@@ -75,6 +100,8 @@ def resolve_paths(
         )
         bin_path = home / ".local" / "bin" / "ccollab"
     return ResolvedPaths(
+        install_root=install_root,
+        runtime_root=install_root,
         skill_dir=codex_home / "skills" / "delegate-to-claude-code",
         bin_path=bin_path,
         config_dir=config_dir,

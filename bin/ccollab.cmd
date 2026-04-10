@@ -1,7 +1,11 @@
 @echo off
 setlocal
 
-for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+if defined CCOLLAB_RUNTIME_ROOT (
+    set "ROOT=%CCOLLAB_RUNTIME_ROOT%"
+) else (
+    for %%I in ("%~dp0..") do set "ROOT=%%~fI"
+)
 
 set "PYTHON_LAUNCHER="
 where py >nul 2>nul

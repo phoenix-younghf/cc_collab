@@ -1,16 +1,23 @@
 $ErrorActionPreference = "Stop"
 
-$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $TargetDir = Join-Path $HOME ".local\bin"
 $Target = Join-Path $TargetDir "ccollab.cmd"
-$RepoLauncher = Join-Path $Root "bin\ccollab.cmd"
+$RuntimeRoot = if ($env:CCOLLAB_RUNTIME_ROOT) {
+    $env:CCOLLAB_RUNTIME_ROOT
+} elseif ($env:LOCALAPPDATA) {
+    Join-Path $env:LOCALAPPDATA "cc_collab\install"
+} else {
+    Join-Path $HOME "AppData\Local\cc_collab\install"
+}
+$PayloadLauncher = Join-Path $RuntimeRoot "bin\ccollab.cmd"
 
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
 
 $Launcher = @"
 @echo off
 setlocal
-call "$RepoLauncher" %*
+set "CCOLLAB_RUNTIME_ROOT=$RuntimeRoot"
+call "$PayloadLauncher" %*
 "@
 
 Set-Content -Path $Target -Value $Launcher -Encoding ascii
@@ -30,3 +37,5 @@ $SessionEntries = $env:PATH -split ";" | Where-Object { $_ }
 if (-not ($SessionEntries | Where-Object { $_.TrimEnd('\') -ieq $NormalizedTargetDir })) {
     $env:PATH = if ($env:PATH) { "$TargetDir;$env:PATH" } else { $TargetDir }
 }
+
+Write-Output "Current session PATH includes: $TargetDir"

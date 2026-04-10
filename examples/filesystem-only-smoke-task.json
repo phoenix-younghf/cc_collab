@@ -1,0 +1,18 @@
+{
+  "task_id": "smoke-filesystem",
+  "task_type": "research",
+  "execution_mode": "single-worker",
+  "write_policy": "read-only",
+  "origin": {"controller": "codex", "workflow_stage": "research"},
+  "workdir": "/tmp",
+  "objective": "Exercise the filesystem-only runtime path.",
+  "context_summary": "Installed-launcher smoke task for non-Git execution.",
+  "inputs": {
+    "files": [],
+    "constraints": [],
+    "acceptance_criteria": ["Persist a task result artifact"],
+    "verification_commands": [],
+    "closeout": {"on_success": "archived", "on_failure": "inspection-required"}
+  },
+  "claude_role": {"mode": "research", "allow_subagents": false}
+}
