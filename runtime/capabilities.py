@@ -38,6 +38,13 @@ class GitCapabilities:
     remediation: str | None
 
 
+@dataclass(frozen=True)
+class RuntimeCapabilities:
+    python: PythonCapability
+    claude: ClaudeCapability
+    git: GitCapabilities
+
+
 def _default_command_exists(name: str) -> bool:
     return shutil.which(name) is not None
 
@@ -181,5 +188,30 @@ def detect_git_capabilities(
             None
             if worktree_returncode == 0
             else "Enable git worktree support to keep write-isolated runs on the Git-backed path."
+        ),
+    )
+
+
+def detect_runtime_capabilities(
+    *,
+    workdir: Path,
+    os_name: str | None = None,
+    command_exists: CommandExists | None = None,
+    flag_probe: FlagProbe | None = None,
+    run_git: RunGit | None = None,
+) -> RuntimeCapabilities:
+    return RuntimeCapabilities(
+        python=detect_python_capability(
+            os_name=os_name,
+            command_exists=command_exists,
+        ),
+        claude=detect_claude_capabilities(
+            command_exists=command_exists,
+            flag_probe=flag_probe,
+        ),
+        git=detect_git_capabilities(
+            workdir=workdir,
+            command_exists=command_exists,
+            run_git=run_git,
         ),
     )

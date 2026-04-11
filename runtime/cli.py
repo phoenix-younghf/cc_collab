@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import tempfile
+from dataclasses import asdict
 from pathlib import Path
 
 from runtime import artifact_store
+from runtime.capabilities import RuntimeCapabilities, detect_runtime_capabilities
 from runtime.claude_runner import build_command, run_claude, select_agent_pack, serialize_agent_pack
 from runtime.closeout_manager import (
-    build_patch_ready_metadata,
     choose_failure_terminal_state,
     generate_patch,
     validate_terminal_state,
@@ -33,14 +36,19 @@ from runtime.workspace_guard import (
     capture_baseline,
     capture_git_head,
     capture_git_status,
-    detect_post_run_changes,
     detect_post_run_changes_with_snapshots,
     detect_unsafe_dirty_state,
     changed_paths_from_git_status,
     snapshot_paths,
+    snapshot_workspace_tree,
     undeclared_changed_files,
 )
-from runtime.worktree_manager import create_isolated_worktree, create_task_owned_commit
+from runtime.worktree_manager import (
+    choose_isolation_strategy,
+    create_filesystem_copy,
+    create_isolated_worktree,
+    create_task_owned_commit,
+)
 
 
 REQUIRED_RESULT_KEYS = {
@@ -56,6 +64,8 @@ REQUIRED_RESULT_KEYS = {
     "agent_usage",
     "terminal_state",
 }
+
+create_task_dir = artifact_store.create_task_dir
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -190,80 +200,294 @@ def persist_result(task_dir: Path, payload: dict) -> None:
     artifact_store.write_text_artifact(task_dir, RESULT_MD, render_result_markdown(payload))
 
 
+def _capability_summary(
+    capabilities: RuntimeCapabilities | None,
+    *,
+    status: str,
+) -> dict[str, object]:
+    summary: dict[str, object] = {"status": status}
+    if capabilities is None:
+        return summary
+    summary["python"] = asdict(capabilities.python)
+    summary["claude"] = asdict(capabilities.claude)
+    summary["git"] = asdict(capabilities.git)
+    return summary
+
+
+def _attach_runtime_metadata(
+    payload: dict,
+    *,
+    runtime_mode: str,
+    degradation_notes: list[str],
+    capability_summary: dict[str, object],
+    remediation: str | None = None,
+) -> dict:
+    payload["runtime_mode"] = runtime_mode
+    payload["degradation_notes"] = degradation_notes
+    payload["capability_summary"] = capability_summary
+    if remediation:
+        payload["remediation"] = remediation
+    return payload
+
+
+def _persist_request(task_dir: Path, request: dict) -> None:
+    artifact_store.write_json_artifact(task_dir, REQUEST_JSON, request)
+    artifact_store.write_text_artifact(task_dir, REQUEST_MD, render_request_markdown(request))
+
+
+def _persist_diagnostic_failure(
+    *,
+    task_id: str,
+    request: dict,
+    summary: str,
+    remediation: str,
+    verification_commands: list[str],
+    run_log_lines: list[str],
+    runtime_mode: str,
+    degradation_notes: list[str],
+    capabilities: RuntimeCapabilities,
+) -> int:
+    diagnostic_root = Path(tempfile.gettempdir()) / "ccollab-diagnostics"
+    diagnostic_dir = artifact_store.create_task_dir(diagnostic_root, task_id)
+    _persist_request(diagnostic_dir, request)
+    failure = _attach_runtime_metadata(
+        task_failure_result(
+            task_id,
+            "inspection-required",
+            summary,
+            verification_commands=verification_commands,
+        ),
+        runtime_mode=runtime_mode,
+        degradation_notes=degradation_notes,
+        capability_summary=_capability_summary(capabilities, status="preflight-failed"),
+        remediation=remediation,
+    )
+    persist_result(diagnostic_dir, failure)
+    artifact_store.write_log_artifact(diagnostic_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
+    print(f"ccollab wrote diagnostics to {diagnostic_dir}", file=sys.stderr)
+    return 1
+
+
+def _preflight_failure(
+    *,
+    task_id: str,
+    terminal_state: str,
+    summary: str,
+    verification_commands: list[str],
+    runtime_mode: str,
+    degradation_notes: list[str],
+    capabilities: RuntimeCapabilities | None,
+    remediation: str | None,
+) -> dict:
+    return _attach_runtime_metadata(
+        task_failure_result(
+            task_id,
+            terminal_state,
+            summary,
+            verification_commands=verification_commands,
+        ),
+        runtime_mode=runtime_mode,
+        degradation_notes=degradation_notes,
+        capability_summary=_capability_summary(capabilities, status="preflight-failed"),
+        remediation=remediation,
+    )
+
+
+def _effective_success_terminal(
+    *,
+    write_policy: str,
+    requested: str,
+    capabilities: RuntimeCapabilities,
+) -> str:
+    if write_policy != "write-isolated" or requested != "commit-ready":
+        return requested
+    if capabilities.git.mode == "git-aware" and capabilities.git.worktree_usable:
+        return requested
+    return "patch-ready"
+
+
+def _runtime_degradation_notes(
+    *,
+    write_policy: str,
+    requested_success_terminal: str,
+    effective_success_terminal: str,
+    capabilities: RuntimeCapabilities,
+) -> list[str]:
+    notes: list[str] = []
+    if capabilities.git.mode == "filesystem-only":
+        notes.append("Git-aware safety is unavailable; using filesystem-only safeguards.")
+    elif write_policy == "write-isolated" and not capabilities.git.worktree_usable:
+        notes.append("git worktree is unavailable; using a filesystem copy for isolated execution.")
+    if effective_success_terminal != requested_success_terminal:
+        notes.append(
+            f"Success terminal degraded from {requested_success_terminal} to {effective_success_terminal}."
+        )
+    return notes
+
+
 def handle_run(args: argparse.Namespace) -> int:
     request_path = Path(args.request)
     task_root = resolve_task_root(args.task_root)
     request = load_request(request_path)
     validate_request(request)
     task_id = request["task_id"]
-    task_dir = artifact_store.create_task_dir(task_root, task_id)
-    artifact_store.write_json_artifact(task_dir, REQUEST_JSON, request)
-    artifact_store.write_text_artifact(task_dir, REQUEST_MD, render_request_markdown(request))
-
     write_policy = request["write_policy"]
     success_terminal = request["inputs"]["closeout"]["on_success"]
     failure_terminal = request["inputs"]["closeout"]["on_failure"]
     verification_commands = request["inputs"].get("verification_commands", [])
     declared_files = request["inputs"].get("files", [])
     workdir = Path(request["workdir"])
-    run_log_lines = [f"task_id={task_id}", f"write_policy={write_policy}"]
+    run_log_lines = [
+        f"task_id={task_id}",
+        f"write_policy={write_policy}",
+        f"requested_success_terminal={success_terminal}",
+        f"requested_failure_terminal={failure_terminal}",
+    ]
+    capabilities = detect_runtime_capabilities(workdir=workdir)
+    runtime_mode = capabilities.git.mode
+    effective_success_terminal = _effective_success_terminal(
+        write_policy=write_policy,
+        requested=success_terminal,
+        capabilities=capabilities,
+    )
+    degradation_notes = _runtime_degradation_notes(
+        write_policy=write_policy,
+        requested_success_terminal=success_terminal,
+        effective_success_terminal=effective_success_terminal,
+        capabilities=capabilities,
+    )
+    run_log_lines.extend(
+        [
+            f"runtime_mode={runtime_mode}",
+            f"effective_success_terminal={effective_success_terminal}",
+        ]
+    )
 
-    baseline = None
+    try:
+        task_dir = create_task_dir(task_root, task_id)
+    except OSError as exc:
+        run_log_lines.append(f"task_dir_error={exc}")
+        return _persist_diagnostic_failure(
+            task_id=task_id,
+            request=request,
+            summary=f"task root is not writable: {exc}",
+            remediation=f"Choose a writable task root and rerun ccollab. Requested task root: {task_root}",
+            verification_commands=verification_commands,
+            run_log_lines=run_log_lines,
+            runtime_mode=runtime_mode,
+            degradation_notes=degradation_notes,
+            capabilities=capabilities,
+        )
+
+    _persist_request(task_dir, request)
+
+    isolation_strategy: str | None = None
     pre_status = None
     pre_status_snapshot: dict[str, str | None] = {}
+    pre_full_snapshot: dict[str, str | None] = {}
     pre_git_head: str | None = None
     target_workdir = workdir
     try:
+        if not workdir.is_dir():
+            failure = _preflight_failure(
+                task_id=task_id,
+                terminal_state=failure_terminal,
+                summary=f"preflight failed: workdir is missing: {workdir}",
+                verification_commands=verification_commands,
+                runtime_mode=runtime_mode,
+                degradation_notes=degradation_notes,
+                capabilities=capabilities,
+                remediation="Create the requested workdir or update the request to point at an existing directory.",
+            )
+            persist_result(task_dir, failure)
+            artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
+            return 1
+        capability_status = "ready" if not degradation_notes else "degraded"
+        capability_summary = _capability_summary(capabilities, status=capability_status)
+
+        if not capabilities.claude.available:
+            failure = _preflight_failure(
+                task_id=task_id,
+                terminal_state=failure_terminal,
+                summary="preflight failed: claude CLI is unavailable",
+                verification_commands=verification_commands,
+                runtime_mode=runtime_mode,
+                degradation_notes=degradation_notes,
+                capabilities=capabilities,
+                remediation=capabilities.claude.remediation,
+            )
+            persist_result(task_dir, failure)
+            artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
+            return 1
+        if capabilities.claude.missing_flags:
+            failure = _preflight_failure(
+                task_id=task_id,
+                terminal_state=failure_terminal,
+                summary=(
+                    "preflight failed: claude is missing required flag support "
+                    f"({', '.join(capabilities.claude.missing_flags)})"
+                ),
+                verification_commands=verification_commands,
+                runtime_mode=runtime_mode,
+                degradation_notes=degradation_notes,
+                capabilities=capabilities,
+                remediation=capabilities.claude.remediation,
+            )
+            persist_result(task_dir, failure)
+            artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
+            return 1
+
         if write_policy in {"read-only", "write-in-place"}:
+            pre_full_snapshot = snapshot_workspace_tree(workdir, task_root=task_root)
             try:
-                pre_status = capture_git_status(workdir)
-                pre_git_head = capture_git_head(workdir)
-                pre_status_snapshot = snapshot_paths(
-                    workdir,
-                    changed_paths_from_git_status(pre_status),
-                )
+                if runtime_mode == "git-aware":
+                    pre_status = capture_git_status(workdir)
+                    pre_git_head = capture_git_head(workdir)
+                    pre_status_snapshot = snapshot_paths(
+                        workdir,
+                        changed_paths_from_git_status(pre_status),
+                    )
             except RuntimeError:
                 pre_status = None
                 pre_git_head = None
-            if write_policy == "read-only" and pre_status is None:
-                failure = task_failure_result(
-                    task_id,
-                    "inspection-required",
-                    "git status capture failed for read-only workspace",
-                    verification_commands=verification_commands,
-                )
-                persist_result(task_dir, failure)
-                artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
-                return 1
-            if write_policy == "write-in-place":
-                if pre_status is None:
-                    failure = task_failure_result(
-                        task_id,
-                        "inspection-required",
-                        "git baseline capture failed for write-in-place",
-                        verification_commands=verification_commands,
+                if runtime_mode == "git-aware":
+                    degradation_notes.append(
+                        "git status capture failed at runtime; falling back to filesystem snapshots."
                     )
-                    persist_result(task_dir, failure)
-                    artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
-                    return 1
+            if write_policy == "write-in-place":
                 baseline = capture_baseline(
                     workdir,
                     declared_files,
                     git_head=pre_git_head,
                     git_status=pre_status,
+                    task_root=task_root,
                 )
                 if detect_unsafe_dirty_state(baseline):
-                    failure = task_failure_result(
-                        task_id,
-                        "inspection-required",
-                        "write-in-place workspace is unsafe",
-                        verification_commands=verification_commands,
+                    failure = _attach_runtime_metadata(
+                        task_failure_result(
+                            task_id,
+                            "inspection-required",
+                            "write-in-place workspace is unsafe",
+                            verification_commands=verification_commands,
+                        ),
+                        runtime_mode=runtime_mode,
+                        degradation_notes=degradation_notes,
+                        capability_summary=capability_summary,
                     )
                     persist_result(task_dir, failure)
                     artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
                     return 1
         elif write_policy == "write-isolated":
-            target_workdir = create_isolated_worktree(workdir, task_dir, task_id)
+            isolation_strategy = choose_isolation_strategy(
+                git_available=capabilities.git.git_available,
+                repo=capabilities.git.repo,
+                worktree_usable=capabilities.git.worktree_usable,
+            )
+            if isolation_strategy == "git-worktree":
+                target_workdir = create_isolated_worktree(workdir, task_dir, task_id)
+            else:
+                target_workdir = create_filesystem_copy(workdir, task_dir)
+            run_log_lines.append(f"isolation_strategy={isolation_strategy}")
             run_log_lines.append(f"isolated_workdir={target_workdir}")
 
         prompt_name = DEFAULT_PROMPT_BY_TASK[request["task_type"]]
@@ -274,7 +498,7 @@ def handle_run(args: argparse.Namespace) -> int:
             f"task_id={task_id}\n"
             f"task_type={request['task_type']}\n"
             f"write_policy={write_policy}\n"
-            f"allowed_success_terminal={success_terminal}\n"
+            f"allowed_success_terminal={effective_success_terminal}\n"
             f"allowed_failure_terminal={failure_terminal}\n"
         )
         allow_subagents = bool(request.get("claude_role", {}).get("allow_subagents"))
@@ -315,17 +539,36 @@ def handle_run(args: argparse.Namespace) -> int:
                     raw_output=raw_result_output,
                     verification_commands=verification_commands,
                 )
-        changed_files = result.get("changed_files", [])
+        result = _attach_runtime_metadata(
+            result,
+            runtime_mode=runtime_mode,
+            degradation_notes=degradation_notes,
+            capability_summary=capability_summary,
+        )
 
-        if write_policy == "read-only" and pre_status is not None:
-            post_status = capture_git_status(workdir)
-            post_git_head = capture_git_head(workdir)
-            if post_git_head != pre_git_head:
-                failure = task_failure_result(
-                    task_id,
-                    "inspection-required",
-                    "read-only task changed repository HEAD",
-                    verification_commands=verification_commands,
+        if write_policy == "read-only":
+            post_status = None
+            post_git_head = pre_git_head
+            if pre_status is not None:
+                try:
+                    post_status = capture_git_status(workdir)
+                    post_git_head = capture_git_head(workdir)
+                except RuntimeError:
+                    post_status = None
+                    degradation_notes.append(
+                        "git status capture failed after Claude ran; validating with filesystem snapshots."
+                    )
+            if pre_status is not None and post_status is not None and post_git_head != pre_git_head:
+                failure = _attach_runtime_metadata(
+                    task_failure_result(
+                        task_id,
+                        "inspection-required",
+                        "read-only task changed repository HEAD",
+                        verification_commands=verification_commands,
+                    ),
+                    runtime_mode=runtime_mode,
+                    degradation_notes=degradation_notes,
+                    capability_summary=capability_summary,
                 )
                 persist_result(task_dir, failure)
                 artifact_store.write_log_artifact(
@@ -334,19 +577,26 @@ def handle_run(args: argparse.Namespace) -> int:
                     "\n".join(run_log_lines) + "\n",
                 )
                 return 1
+            snapshot_source = pre_status_snapshot if pre_status is not None and post_status is not None else pre_full_snapshot
             read_only_changes = detect_post_run_changes_with_snapshots(
                 workdir,
-                pre_status,
-                pre_status_snapshot,
+                pre_status if post_status is not None else None,
+                snapshot_source,
                 post_status,
+                task_root=task_root,
             )
             if read_only_changes:
-                failure = task_failure_result(
-                    task_id,
-                    "inspection-required",
-                    "read-only task modified target workspace",
-                    changed_files=read_only_changes,
-                    verification_commands=verification_commands,
+                failure = _attach_runtime_metadata(
+                    task_failure_result(
+                        task_id,
+                        "inspection-required",
+                        "read-only task modified target workspace",
+                        changed_files=read_only_changes,
+                        verification_commands=verification_commands,
+                    ),
+                    runtime_mode=runtime_mode,
+                    degradation_notes=degradation_notes,
+                    capability_summary=capability_summary,
                 )
                 persist_result(task_dir, failure)
                 artifact_store.write_log_artifact(
@@ -356,15 +606,29 @@ def handle_run(args: argparse.Namespace) -> int:
                 )
                 return 1
 
-        if write_policy == "write-in-place" and pre_status is not None:
-            post_status = capture_git_status(workdir)
-            post_git_head = capture_git_head(workdir)
-            if post_git_head != pre_git_head:
-                failure = task_failure_result(
-                    task_id,
-                    "inspection-required",
-                    "write-in-place task changed repository HEAD",
-                    verification_commands=verification_commands,
+        if write_policy == "write-in-place":
+            post_status = None
+            post_git_head = pre_git_head
+            if pre_status is not None:
+                try:
+                    post_status = capture_git_status(workdir)
+                    post_git_head = capture_git_head(workdir)
+                except RuntimeError:
+                    post_status = None
+                    degradation_notes.append(
+                        "git status capture failed after Claude ran; validating write-in-place changes with filesystem snapshots."
+                    )
+            if pre_status is not None and post_status is not None and post_git_head != pre_git_head:
+                failure = _attach_runtime_metadata(
+                    task_failure_result(
+                        task_id,
+                        "inspection-required",
+                        "write-in-place task changed repository HEAD",
+                        verification_commands=verification_commands,
+                    ),
+                    runtime_mode=runtime_mode,
+                    degradation_notes=degradation_notes,
+                    capability_summary=capability_summary,
                 )
                 persist_result(task_dir, failure)
                 artifact_store.write_log_artifact(
@@ -373,32 +637,44 @@ def handle_run(args: argparse.Namespace) -> int:
                     "\n".join(run_log_lines) + "\n",
                 )
                 return 1
+            snapshot_source = pre_status_snapshot if pre_status is not None and post_status is not None else pre_full_snapshot
             changed_paths = detect_post_run_changes_with_snapshots(
                 workdir,
-                pre_status,
-                pre_status_snapshot,
+                pre_status if post_status is not None else None,
+                snapshot_source,
                 post_status,
+                task_root=task_root,
             )
             undeclared = undeclared_changed_files(changed_paths, declared_files)
             if undeclared:
                 terminal = choose_failure_terminal_state([failure_terminal])
-                failure = task_failure_result(
-                    task_id,
-                    terminal,
-                    "undeclared files were modified during write-in-place execution",
-                    changed_files=undeclared,
-                    verification_commands=verification_commands,
+                failure = _attach_runtime_metadata(
+                    task_failure_result(
+                        task_id,
+                        terminal,
+                        "undeclared files were modified during write-in-place execution",
+                        changed_files=undeclared,
+                        verification_commands=verification_commands,
+                    ),
+                    runtime_mode=runtime_mode,
+                    degradation_notes=degradation_notes,
+                    capability_summary=capability_summary,
                 )
-                if terminal == "patch-ready":
+                if terminal == "patch-ready" and pre_status is not None and post_status is not None:
                     try:
                         failure.update(generate_patch(workdir, task_dir, changed_paths))
                     except RuntimeError:
-                        failure = task_failure_result(
-                            task_id,
-                            "inspection-required",
-                            "patch generation failed",
-                            changed_files=undeclared,
-                            verification_commands=verification_commands,
+                        failure = _attach_runtime_metadata(
+                            task_failure_result(
+                                task_id,
+                                "inspection-required",
+                                "patch generation failed",
+                                changed_files=undeclared,
+                                verification_commands=verification_commands,
+                            ),
+                            runtime_mode=runtime_mode,
+                            degradation_notes=degradation_notes,
+                            capability_summary=capability_summary,
                         )
                 persist_result(task_dir, failure)
                 artifact_store.write_log_artifact(
@@ -409,15 +685,15 @@ def handle_run(args: argparse.Namespace) -> int:
                 return 1
 
         if result.get("status") == "completed":
-            if write_policy == "write-isolated" and success_terminal == "commit-ready":
+            if write_policy == "write-isolated" and effective_success_terminal == "commit-ready":
                 result.update(create_task_owned_commit(target_workdir, declared_files, task_id))
-            elif success_terminal == "patch-ready":
+            elif effective_success_terminal == "patch-ready" and isolation_strategy == "git-worktree":
                 result.update(generate_patch(target_workdir, task_dir, declared_files))
-            result["terminal_state"] = success_terminal
+            result["terminal_state"] = effective_success_terminal
             validate_result(
                 result,
                 write_policy=write_policy,
-                allowed_terminal_state=success_terminal,
+                allowed_terminal_state=effective_success_terminal,
             )
             persist_result(task_dir, result)
             artifact_store.write_log_artifact(
@@ -439,18 +715,31 @@ def handle_run(args: argparse.Namespace) -> int:
     except (ValidationError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         terminal = choose_failure_terminal_state([failure_terminal])
         metadata: dict | None = None
-        if terminal == "patch-ready" and write_policy == "write-isolated" and declared_files:
+        if (
+            terminal == "patch-ready"
+            and write_policy == "write-isolated"
+            and declared_files
+            and isolation_strategy == "git-worktree"
+        ):
             try:
                 metadata = generate_patch(target_workdir, task_dir, declared_files)
             except RuntimeError:
                 terminal = "inspection-required"
                 metadata = None
-        failure = task_failure_result(
-            task_id,
-            terminal,
-            str(exc),
-            verification_commands=verification_commands,
-            metadata=metadata,
+        failure = _attach_runtime_metadata(
+            task_failure_result(
+                task_id,
+                terminal,
+                str(exc),
+                verification_commands=verification_commands,
+                metadata=metadata,
+            ),
+            runtime_mode=runtime_mode,
+            degradation_notes=degradation_notes,
+            capability_summary=_capability_summary(
+                capabilities,
+                status="failed",
+            ),
         )
         persist_result(task_dir, failure)
         artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from runtime.workspace_guard import copy_workspace_tree
+
 
 def build_worktree_add_command(branch_name: str, repo_root: str, worktree_path: str) -> list[str]:
     return ["git", "-C", repo_root, "worktree", "add", worktree_path, "-b", branch_name]
@@ -13,6 +15,27 @@ def build_commit_ready_metadata(isolated_path: str, commit_shas: list[str]) -> d
         "isolated_path": isolated_path,
         "commit_shas": commit_shas,
     }
+
+
+def choose_isolation_strategy(
+    *,
+    git_available: bool,
+    repo: bool,
+    worktree_usable: bool,
+) -> str:
+    if git_available and repo and worktree_usable:
+        return "git-worktree"
+    return "filesystem-copy"
+
+
+def create_filesystem_copy(repo_root: Path, task_dir: Path) -> Path:
+    copied_root = task_dir / "isolated-copy"
+    copy_workspace_tree(
+        repo_root,
+        copied_root,
+        task_root=task_dir.parent,
+    )
+    return copied_root
 
 
 def create_isolated_worktree(repo_root: Path, task_dir: Path, task_id: str) -> Path:
