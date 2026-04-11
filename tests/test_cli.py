@@ -481,12 +481,18 @@ class CliRuntimeModeTests(TestCase):
         self.assertTrue(find_temp_diagnostic(task_id).exists())
         self.assertIn(str(diagnostic_dir), stderr.getvalue())
 
-    @patch("runtime.cli.generate_patch", return_value={"patch_path": "/tmp/changes.patch"})
+    @patch(
+        "runtime.cli.generate_patch_from_workspace_pair",
+        return_value={
+            "patch_path": "/tmp/changes.patch",
+            "apply_command": "git apply -p2 /tmp/changes.patch",
+        },
+    )
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
     def test_non_git_write_isolated_uses_filesystem_copy(
         self,
         _mock_run: object,
-        _mock_patch: object,
+        _mock_patch_pair: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
             request = write_request(tmp, write_policy="write-isolated")
@@ -498,6 +504,37 @@ class CliRuntimeModeTests(TestCase):
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["runtime_mode"], "filesystem-only")
+
+    @patch(
+        "runtime.cli.generate_patch_from_workspace_pair",
+        return_value={
+            "patch_path": "/tmp/changes.patch",
+            "apply_command": "git apply -p2 /tmp/changes.patch",
+        },
+    )
+    @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
+    def test_non_git_write_isolated_patch_ready_emits_patch_metadata(
+        self,
+        _mock_run: object,
+        mock_patch_pair: object,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                write_policy="write-isolated",
+                success_terminal="commit-ready",
+            )
+            with patch(
+                "runtime.cli.detect_runtime_capabilities",
+                return_value=filesystem_only_caps(),
+            ):
+                exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(result["terminal_state"], "patch-ready")
+            self.assertEqual(result["patch_path"], "/tmp/changes.patch")
+            self.assertIn("git apply", result["apply_command"])
+            mock_patch_pair.assert_called_once()
 
     @patch("runtime.cli.generate_patch", return_value={"patch_path": "/tmp/changes.patch"})
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
@@ -522,12 +559,18 @@ class CliRuntimeModeTests(TestCase):
         runtime_contract = mock_build.call_args.kwargs["runtime_contract"]
         self.assertIn("allowed_success_terminal=patch-ready", runtime_contract)
 
-    @patch("runtime.cli.generate_patch", return_value={"patch_path": "/tmp/changes.patch"})
+    @patch(
+        "runtime.cli.generate_patch_from_workspace_pair",
+        return_value={
+            "patch_path": "/tmp/changes.patch",
+            "apply_command": "git apply -p2 /tmp/changes.patch",
+        },
+    )
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
     def test_degraded_git_aware_write_isolated_success_stays_git_aware(
         self,
         _mock_run: object,
-        _mock_patch: object,
+        _mock_patch_pair: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
             request = write_request(
@@ -544,3 +587,69 @@ class CliRuntimeModeTests(TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["runtime_mode"], "git-aware")
             self.assertTrue(result["degradation_notes"])
+
+    @patch(
+        "runtime.cli.generate_patch_from_workspace_pair",
+        return_value={
+            "patch_path": "/tmp/changes.patch",
+            "apply_command": "git apply -p2 /tmp/changes.patch",
+        },
+    )
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=["src.txt", "extra.txt"])
+    @patch("runtime.cli.run_claude", return_value=(completed_output("task-1"), ""))
+    def test_filesystem_only_write_in_place_patch_ready_failure_emits_patch_metadata(
+        self,
+        _mock_run: object,
+        _mock_changes: object,
+        mock_patch_pair: object,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                write_policy="write-in-place",
+                failure_terminal="patch-ready",
+                files=["src.txt"],
+            )
+            with patch(
+                "runtime.cli.detect_runtime_capabilities",
+                return_value=filesystem_only_caps(),
+            ):
+                exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(result["terminal_state"], "patch-ready")
+            self.assertEqual(result["patch_path"], "/tmp/changes.patch")
+            self.assertIn("git apply", result["apply_command"])
+            mock_patch_pair.assert_called_once()
+
+    @patch(
+        "runtime.cli.generate_patch_from_workspace_pair",
+        return_value={
+            "patch_path": "/tmp/changes.patch",
+            "apply_command": "git apply -p2 /tmp/changes.patch",
+        },
+    )
+    @patch("runtime.cli.run_claude", side_effect=RuntimeError("boom"))
+    def test_filesystem_only_write_in_place_exception_emits_patch_metadata(
+        self,
+        _mock_run: object,
+        mock_patch_pair: object,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                write_policy="write-in-place",
+                failure_terminal="patch-ready",
+                files=["src.txt"],
+            )
+            with patch(
+                "runtime.cli.detect_runtime_capabilities",
+                return_value=filesystem_only_caps(),
+            ):
+                exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(result["terminal_state"], "patch-ready")
+            self.assertEqual(result["patch_path"], "/tmp/changes.patch")
+            self.assertIn("git apply", result["apply_command"])
+            mock_patch_pair.assert_called_once()

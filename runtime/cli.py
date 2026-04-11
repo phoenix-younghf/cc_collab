@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import asdict
@@ -36,6 +38,7 @@ from runtime.workspace_guard import (
     capture_baseline,
     capture_git_head,
     capture_git_status,
+    copy_workspace_tree,
     detect_post_run_changes_with_snapshots,
     detect_unsafe_dirty_state,
     changed_paths_from_git_status,
@@ -325,6 +328,58 @@ def _runtime_degradation_notes(
     return notes
 
 
+def _stage_patch_paths(
+    source_root: Path,
+    stage_root: Path,
+    relative_paths: list[str],
+) -> None:
+    for relative_path in relative_paths:
+        source_path = source_root / relative_path
+        if not source_path.exists():
+            continue
+        if not source_path.is_file():
+            raise RuntimeError("patch paths must be files")
+        target_path = stage_root / relative_path
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+
+
+def generate_patch_from_workspace_pair(
+    original_root: Path,
+    modified_root: Path,
+    task_dir: Path,
+    paths_to_patch: list[str],
+) -> dict[str, str]:
+    candidate_paths = sorted(dict.fromkeys(paths_to_patch))
+    if not candidate_paths:
+        raise RuntimeError("no paths to patch")
+    patch_path = artifact_store.patch_path_for_task(task_dir)
+    with tempfile.TemporaryDirectory(prefix="ccollab-patch-") as tmp:
+        temp_root = Path(tmp)
+        before_root = temp_root / "before"
+        after_root = temp_root / "after"
+        before_root.mkdir()
+        after_root.mkdir()
+        _stage_patch_paths(original_root, before_root, candidate_paths)
+        _stage_patch_paths(modified_root, after_root, candidate_paths)
+        result = subprocess.run(
+            ["git", "diff", "--no-index", "--binary", "--", "before", "after"],
+            cwd=temp_root,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode not in {0, 1}:
+            raise RuntimeError("patch generation failed")
+        if not result.stdout.strip():
+            raise RuntimeError("patch generation failed")
+        patch_path.write_text(result.stdout, encoding="utf-8")
+    return {
+        "patch_path": str(patch_path),
+        "apply_command": f"git apply -p2 {patch_path}",
+    }
+
+
 def handle_run(args: argparse.Namespace) -> int:
     request_path = Path(args.request)
     task_root = resolve_task_root(args.task_root)
@@ -385,6 +440,7 @@ def handle_run(args: argparse.Namespace) -> int:
     pre_status = None
     pre_status_snapshot: dict[str, str | None] = {}
     pre_full_snapshot: dict[str, str | None] = {}
+    pre_run_copy_root: Path | None = None
     pre_git_head: str | None = None
     target_workdir = workdir
     try:
@@ -439,6 +495,9 @@ def handle_run(args: argparse.Namespace) -> int:
 
         if write_policy in {"read-only", "write-in-place"}:
             pre_full_snapshot = snapshot_workspace_tree(workdir, task_root=task_root)
+            if write_policy == "write-in-place" and failure_terminal == "patch-ready":
+                pre_run_copy_root = task_dir / "pre-run-workspace"
+                copy_workspace_tree(workdir, pre_run_copy_root, task_root=task_dir)
             try:
                 if runtime_mode == "git-aware":
                     pre_status = capture_git_status(workdir)
@@ -676,6 +735,29 @@ def handle_run(args: argparse.Namespace) -> int:
                             degradation_notes=degradation_notes,
                             capability_summary=capability_summary,
                         )
+                elif terminal == "patch-ready" and pre_run_copy_root is not None:
+                    try:
+                        failure.update(
+                            generate_patch_from_workspace_pair(
+                                pre_run_copy_root,
+                                workdir,
+                                task_dir,
+                                changed_paths,
+                            )
+                        )
+                    except RuntimeError:
+                        failure = _attach_runtime_metadata(
+                            task_failure_result(
+                                task_id,
+                                "inspection-required",
+                                "patch generation failed",
+                                changed_files=undeclared,
+                                verification_commands=verification_commands,
+                            ),
+                            runtime_mode=runtime_mode,
+                            degradation_notes=degradation_notes,
+                            capability_summary=capability_summary,
+                        )
                 persist_result(task_dir, failure)
                 artifact_store.write_log_artifact(
                     task_dir,
@@ -689,6 +771,15 @@ def handle_run(args: argparse.Namespace) -> int:
                 result.update(create_task_owned_commit(target_workdir, declared_files, task_id))
             elif effective_success_terminal == "patch-ready" and isolation_strategy == "git-worktree":
                 result.update(generate_patch(target_workdir, task_dir, declared_files))
+            elif effective_success_terminal == "patch-ready" and write_policy == "write-isolated":
+                result.update(
+                    generate_patch_from_workspace_pair(
+                        workdir,
+                        target_workdir,
+                        task_dir,
+                        declared_files,
+                    )
+                )
             result["terminal_state"] = effective_success_terminal
             validate_result(
                 result,
@@ -715,14 +806,30 @@ def handle_run(args: argparse.Namespace) -> int:
     except (ValidationError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         terminal = choose_failure_terminal_state([failure_terminal])
         metadata: dict | None = None
-        if (
-            terminal == "patch-ready"
-            and write_policy == "write-isolated"
-            and declared_files
-            and isolation_strategy == "git-worktree"
-        ):
+        if terminal == "patch-ready" and write_policy == "write-isolated" and declared_files:
             try:
-                metadata = generate_patch(target_workdir, task_dir, declared_files)
+                if isolation_strategy == "git-worktree":
+                    metadata = generate_patch(target_workdir, task_dir, declared_files)
+                elif isolation_strategy == "filesystem-copy":
+                    metadata = generate_patch_from_workspace_pair(
+                        workdir,
+                        target_workdir,
+                        task_dir,
+                        declared_files,
+                    )
+            except RuntimeError:
+                terminal = "inspection-required"
+                metadata = None
+        elif terminal == "patch-ready" and write_policy == "write-in-place" and pre_run_copy_root is not None:
+            try:
+                before_paths = snapshot_workspace_tree(pre_run_copy_root)
+                current_paths = snapshot_workspace_tree(workdir, task_root=task_dir)
+                metadata = generate_patch_from_workspace_pair(
+                    pre_run_copy_root,
+                    workdir,
+                    task_dir,
+                    sorted(set(before_paths) | set(current_paths)),
+                )
             except RuntimeError:
                 terminal = "inspection-required"
                 metadata = None
