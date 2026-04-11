@@ -32,3 +32,16 @@ py -3 -m runtime.cli doctor
 ```
 
 If `py` is unavailable, use `python`.
+
+Install-root note:
+
+- macOS: `~/Library/Application Support/cc_collab/install`
+- Linux: `~/.local/share/cc_collab/install`
+- Windows: `%LOCALAPPDATA%\cc_collab\install`
+
+Smoke templates:
+
+- `examples/filesystem-only-smoke-task.json`
+- `examples/git-aware-smoke-task.json`
+
+These example requests are templates. Rewrite their `workdir` before running them, then use `ccollab run --request ... --task-root ...` to verify either the filesystem-only path or the Git-aware path.

@@ -40,3 +40,49 @@ class InstallDocsTests(TestCase):
         self.assertTrue(Path("install/install-bin.ps1").exists())
         self.assertTrue(Path("install/install-skill.ps1").exists())
         self.assertTrue(Path("bin/ccollab.cmd").exists())
+
+    def test_readme_mentions_install_root_and_git_optional_mode(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("install root", readme.lower())
+        self.assertIn("Git is optional", readme)
+        self.assertIn("filesystem-only", readme)
+        self.assertIn("template", readme.lower())
+
+    def test_agents_doc_mentions_native_smoke_templates(self) -> None:
+        agents = Path("AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("filesystem-only-smoke-task.json", agents)
+        self.assertIn("git-aware-smoke-task.json", agents)
+        self.assertIn("template", agents.lower())
+
+    def test_skill_docs_explain_filesystem_only_runtime(self) -> None:
+        skill = Path("skill/delegate-to-claude-code/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("filesystem-only", skill)
+        self.assertIn("Git-aware", skill)
+
+    def test_readme_lists_explicit_windows_smoke_commands(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("Copy-Item .\\examples\\filesystem-only-smoke-task.json", readme)
+        self.assertIn("git init $env:TEMP\\ccollab-git-smoke", readme)
+        self.assertIn("cmd /c ccollab run", readme)
+
+    def test_readme_uses_dedicated_filesystem_smoke_workdirs(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("/tmp/ccollab-filesystem-workdir", readme)
+        self.assertIn("$env:TEMP\\ccollab-filesystem-workdir", readme)
+
+    def test_readme_lists_manual_validation_prerequisites(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("python3 -m unittest tests.test_cli -v", readme)
+        self.assertIn("cmd /c ccollab doctor", readme)
+
+    def test_readme_uses_bom_safe_windows_json_rewrite(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("UTF8Encoding", readme)
+        self.assertNotIn("Set-Content $dst -Encoding utf8", readme)
+
+    def test_runtime_docs_describe_degraded_git_aware_mode(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        skill = Path("skill/delegate-to-claude-code/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("remains `git-aware`", readme)
+        self.assertIn("filesystem-copy isolation", readme)
+        self.assertIn("remains `git-aware`", skill.lower())

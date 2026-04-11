@@ -139,6 +139,8 @@ def _iter_workspace_files(
         dirnames[:] = filtered_dirnames
         for filename in sorted(filenames):
             full_path = current_path / filename
+            if not full_path.is_file():
+                continue
             relative_path = full_path.relative_to(root).as_posix()
             files.append((full_path, relative_path))
     return files

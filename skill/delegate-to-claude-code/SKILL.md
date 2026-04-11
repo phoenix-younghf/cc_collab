@@ -29,6 +29,15 @@ Do not delegate automatically when:
 - Claude output is advisory until verification is re-run locally.
 - Use request/result artifacts produced by `ccollab` rather than ad-hoc summaries.
 
+## Runtime Modes
+
+`ccollab` may execute in either `Git-aware` or `filesystem-only` mode.
+
+- Prefer `Git-aware` execution when the target workdir is inside a healthy Git repository.
+- Expect `filesystem-only` execution when Git is unavailable or the workdir is outside Git.
+- If the repo is healthy but `git worktree` support is degraded, execution remains `Git-aware` and write-isolated tasks fall back to filesystem-copy isolation.
+- When using smoke requests from `examples/`, treat them as templates and rewrite `workdir` before invoking `ccollab run`.
+
 ## Bootstrap
 
 Before exploring docs or building a request:

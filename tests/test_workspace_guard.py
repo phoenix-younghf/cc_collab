@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -101,6 +102,25 @@ class WorkspaceGuardTests(TestCase):
             self.assertIn("src.txt", snapshot)
             self.assertNotIn(".git/config", snapshot)
             self.assertNotIn("tasks/task-1/result.json", snapshot)
+
+    def test_snapshot_workspace_tree_skips_non_regular_files(self) -> None:
+        if not hasattr(socket, "AF_UNIX"):
+            self.skipTest("AF_UNIX sockets unavailable on this platform")
+        with TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            socket_path = project / "ccollab.sock"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                try:
+                    server.bind(str(socket_path))
+                except PermissionError as exc:
+                    self.skipTest(f"AF_UNIX bind unavailable in this environment: {exc}")
+                (project / "src.txt").write_text("hello", encoding="utf-8")
+                snapshot = snapshot_workspace_tree(project)
+            finally:
+                server.close()
+            self.assertIn("src.txt", snapshot)
+            self.assertNotIn("ccollab.sock", snapshot)
 
     def test_copy_workspace_tree_skips_recursion_hazards(self) -> None:
         with TemporaryDirectory() as tmp:
