@@ -14,6 +14,9 @@ from runtime import artifact_store
 from runtime.capabilities import RuntimeCapabilities, detect_runtime_capabilities
 from runtime.claude_runner import build_command, run_claude, select_agent_pack, serialize_agent_pack
 from runtime.closeout_manager import (
+    build_file_change_set_metadata,
+    build_git_patch_metadata_for_workspace_pair,
+    collect_file_change_set_entries,
     choose_failure_terminal_state,
     generate_patch,
     validate_terminal_state,
@@ -226,6 +229,7 @@ def _attach_runtime_metadata(
     remediation: str | None = None,
 ) -> dict:
     payload["runtime_mode"] = runtime_mode
+    payload.setdefault("artifact_type", "none")
     payload["degradation_notes"] = degradation_notes
     payload["capability_summary"] = capability_summary
     if remediation:
@@ -374,10 +378,31 @@ def generate_patch_from_workspace_pair(
         if not result.stdout.strip():
             raise RuntimeError("patch generation failed")
         patch_path.write_text(result.stdout, encoding="utf-8")
-    return {
-        "patch_path": str(patch_path),
-        "apply_command": f"git apply -p2 {patch_path}",
-    }
+    return build_git_patch_metadata_for_workspace_pair(
+        task_dir=task_dir,
+        patch_path=patch_path,
+    )
+
+
+def generate_file_change_set_from_workspace_pair(
+    original_root: Path,
+    modified_root: Path,
+    task_dir: Path,
+    changed_paths: list[str],
+) -> dict[str, object]:
+    entries = collect_file_change_set_entries(
+        original_root=original_root,
+        modified_root=modified_root,
+        task_dir=task_dir,
+        changed_paths=changed_paths,
+    )
+    metadata = build_file_change_set_metadata(task_dir, entries)
+    artifact_store.write_json_artifact(
+        artifact_store.change_set_dir_for_task(task_dir),
+        artifact_store.change_set_manifest_path_for_task(task_dir).name,
+        metadata["change_set_manifest"],
+    )
+    return metadata
 
 
 def handle_run(args: argparse.Namespace) -> int:
@@ -719,10 +744,33 @@ def handle_run(args: argparse.Namespace) -> int:
                     degradation_notes=degradation_notes,
                     capability_summary=capability_summary,
                 )
-                if terminal == "patch-ready" and pre_status is not None and post_status is not None:
+                if terminal == "patch-ready" and runtime_mode == "filesystem-only" and pre_run_copy_root is not None:
+                    try:
+                        failure.update(
+                            generate_file_change_set_from_workspace_pair(
+                                pre_run_copy_root,
+                                workdir,
+                                task_dir,
+                                undeclared,
+                            )
+                        )
+                    except (RuntimeError, ValueError):
+                        failure = _attach_runtime_metadata(
+                            task_failure_result(
+                                task_id,
+                                "inspection-required",
+                                "patch generation failed",
+                                changed_files=undeclared,
+                                verification_commands=verification_commands,
+                            ),
+                            runtime_mode=runtime_mode,
+                            degradation_notes=degradation_notes,
+                            capability_summary=capability_summary,
+                        )
+                elif terminal == "patch-ready" and pre_status is not None and post_status is not None:
                     try:
                         failure.update(generate_patch(workdir, task_dir, changed_paths))
-                    except RuntimeError:
+                    except (RuntimeError, ValueError):
                         failure = _attach_runtime_metadata(
                             task_failure_result(
                                 task_id,
@@ -742,10 +790,10 @@ def handle_run(args: argparse.Namespace) -> int:
                                 pre_run_copy_root,
                                 workdir,
                                 task_dir,
-                                changed_paths,
+                                undeclared,
                             )
                         )
-                    except RuntimeError:
+                    except (RuntimeError, ValueError):
                         failure = _attach_runtime_metadata(
                             task_failure_result(
                                 task_id,
@@ -769,17 +817,27 @@ def handle_run(args: argparse.Namespace) -> int:
         if result.get("status") == "completed":
             if write_policy == "write-isolated" and effective_success_terminal == "commit-ready":
                 result.update(create_task_owned_commit(target_workdir, declared_files, task_id))
-            elif effective_success_terminal == "patch-ready" and isolation_strategy == "git-worktree":
-                result.update(generate_patch(target_workdir, task_dir, declared_files))
             elif effective_success_terminal == "patch-ready" and write_policy == "write-isolated":
-                result.update(
-                    generate_patch_from_workspace_pair(
-                        workdir,
-                        target_workdir,
-                        task_dir,
-                        declared_files,
+                if runtime_mode == "filesystem-only":
+                    result.update(
+                        generate_file_change_set_from_workspace_pair(
+                            workdir,
+                            target_workdir,
+                            task_dir,
+                            declared_files,
+                        )
                     )
-                )
+                elif isolation_strategy == "git-worktree":
+                    result.update(generate_patch(target_workdir, task_dir, declared_files))
+                else:
+                    result.update(
+                        generate_patch_from_workspace_pair(
+                            workdir,
+                            target_workdir,
+                            task_dir,
+                            declared_files,
+                        )
+                    )
             result["terminal_state"] = effective_success_terminal
             validate_result(
                 result,
@@ -808,7 +866,14 @@ def handle_run(args: argparse.Namespace) -> int:
         metadata: dict | None = None
         if terminal == "patch-ready" and write_policy == "write-isolated" and declared_files:
             try:
-                if isolation_strategy == "git-worktree":
+                if runtime_mode == "filesystem-only":
+                    metadata = generate_file_change_set_from_workspace_pair(
+                        workdir,
+                        target_workdir,
+                        task_dir,
+                        declared_files,
+                    )
+                elif isolation_strategy == "git-worktree":
                     metadata = generate_patch(target_workdir, task_dir, declared_files)
                 elif isolation_strategy == "filesystem-copy":
                     metadata = generate_patch_from_workspace_pair(
@@ -817,20 +882,29 @@ def handle_run(args: argparse.Namespace) -> int:
                         task_dir,
                         declared_files,
                     )
-            except RuntimeError:
+            except (RuntimeError, ValueError):
                 terminal = "inspection-required"
                 metadata = None
         elif terminal == "patch-ready" and write_policy == "write-in-place" and pre_run_copy_root is not None:
             try:
                 before_paths = snapshot_workspace_tree(pre_run_copy_root)
                 current_paths = snapshot_workspace_tree(workdir, task_root=task_dir)
-                metadata = generate_patch_from_workspace_pair(
-                    pre_run_copy_root,
-                    workdir,
-                    task_dir,
-                    sorted(set(before_paths) | set(current_paths)),
-                )
-            except RuntimeError:
+                changed_paths = sorted(set(before_paths) | set(current_paths))
+                if runtime_mode == "filesystem-only":
+                    metadata = generate_file_change_set_from_workspace_pair(
+                        pre_run_copy_root,
+                        workdir,
+                        task_dir,
+                        changed_paths,
+                    )
+                else:
+                    metadata = generate_patch_from_workspace_pair(
+                        pre_run_copy_root,
+                        workdir,
+                        task_dir,
+                        changed_paths,
+                    )
+            except (RuntimeError, ValueError):
                 terminal = "inspection-required"
                 metadata = None
         failure = _attach_runtime_metadata(

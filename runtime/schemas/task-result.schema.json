@@ -12,7 +12,11 @@
     "risks",
     "follow_up_suggestions",
     "agent_usage",
-    "terminal_state"
+    "terminal_state",
+    "runtime_mode",
+    "artifact_type",
+    "capability_summary",
+    "degradation_notes"
   ],
   "properties": {
     "task_id": {"type": "string"},
@@ -53,6 +57,25 @@
         "discarded",
         "inspection-required"
       ]
-    }
+    },
+    "runtime_mode": {
+      "type": "string",
+      "enum": ["git-aware", "filesystem-only"]
+    },
+    "artifact_type": {
+      "type": "string",
+      "enum": ["none", "git-patch", "file-change-set"]
+    },
+    "capability_summary": {
+      "type": "object"
+    },
+    "degradation_notes": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "remediation": {"type": "string"},
+    "patch_path": {"type": "string"},
+    "apply_command": {"type": "string"},
+    "change_set_manifest": {"type": "object"}
   }
 }

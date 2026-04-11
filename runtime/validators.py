@@ -17,6 +17,8 @@ class ValidationError(ValueError):
     """Raised when a request or result contract is invalid."""
 
 TASK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+RUNTIME_MODES = ("git-aware", "filesystem-only")
+ARTIFACT_TYPES = ("none", "git-patch", "file-change-set")
 
 
 def _require(condition: bool, message: str) -> None:
@@ -75,6 +77,15 @@ def validate_result(
     _require(isinstance(payload, dict), "result must be a mapping")
     _require(payload.get("status") in RESULT_STATUSES, "invalid result status")
     _require(payload.get("terminal_state") in TERMINAL_STATES, "invalid terminal state")
+    _require(payload.get("runtime_mode") in RUNTIME_MODES, "invalid runtime mode")
+    _require(payload.get("artifact_type") in ARTIFACT_TYPES, "invalid artifact type")
+    _require(isinstance(payload.get("capability_summary"), dict), "capability_summary must be a mapping")
+    _require("degradation_notes" in payload, "degradation_notes is required")
+    _require(isinstance(payload.get("degradation_notes", []), list), "degradation_notes must be a list")
+    for item in payload.get("degradation_notes", []):
+        _require(isinstance(item, str), "degradation note must be a string")
+    if "remediation" in payload:
+        _require(isinstance(payload.get("remediation"), str), "remediation must be a string")
     _require(
         payload.get("terminal_state") == allowed_terminal_state,
         "result terminal state mismatch",
@@ -82,8 +93,30 @@ def validate_result(
     _require(isinstance(payload.get("changed_files", []), list), "changed_files must be a list")
     if write_policy == "read-only":
         _require(not payload.get("changed_files"), "read-only tasks cannot change files")
+        _require(payload.get("artifact_type") == "none", "read-only tasks cannot emit closeout artifacts")
     verification = payload.get("verification", {})
     _require(isinstance(verification.get("commands_run", []), list), "commands_run must be a list")
     _require(isinstance(verification.get("results", []), list), "results must be a list")
     agent_usage = payload.get("agent_usage", {})
     _require(isinstance(agent_usage, dict), "agent_usage must be a mapping")
+    artifact_type = payload.get("artifact_type")
+    terminal_state = payload.get("terminal_state")
+    if terminal_state == "patch-ready":
+        _require(
+            artifact_type in {"git-patch", "file-change-set"},
+            "patch-ready results require closeout artifact metadata",
+        )
+    elif artifact_type in {"git-patch", "file-change-set"}:
+        _require(terminal_state == "patch-ready", "closeout artifacts require patch-ready terminal state")
+    if artifact_type == "git-patch":
+        _require(payload.get("runtime_mode") == "git-aware", "git-patch artifacts require git-aware runtime")
+        _require(isinstance(payload.get("patch_path"), str), "git-patch results require patch_path")
+        _require(isinstance(payload.get("apply_command"), str), "git-patch results require apply_command")
+    if artifact_type == "file-change-set":
+        _require(
+            payload.get("runtime_mode") == "filesystem-only",
+            "file-change-set artifacts require filesystem-only runtime",
+        )
+        manifest = payload.get("change_set_manifest")
+        _require(isinstance(manifest, dict), "file-change-set results require change_set_manifest")
+        _require(isinstance(manifest.get("entries", []), list), "change_set_manifest entries must be a list")

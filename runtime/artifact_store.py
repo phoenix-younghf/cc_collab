@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from runtime.constants import PATCH_FILE
 
@@ -44,6 +44,23 @@ def load_json_artifact(task_dir: Path, name: str) -> dict:
 
 def patch_path_for_task(task_dir: Path) -> Path:
     return task_dir / PATCH_FILE
+
+
+def change_set_dir_for_task(task_dir: Path) -> Path:
+    return task_dir / "file-change-set"
+
+
+def change_set_manifest_path_for_task(task_dir: Path) -> Path:
+    return change_set_dir_for_task(task_dir) / "manifest.json"
+
+
+def change_set_storage_path_for_task(task_dir: Path, relative_path: str) -> Path:
+    if not isinstance(relative_path, str) or not relative_path:
+        raise ValueError("invalid change-set relative path")
+    candidate = PurePosixPath(relative_path)
+    if candidate.is_absolute() or ".." in candidate.parts or "." in candidate.parts:
+        raise ValueError("invalid change-set relative path")
+    return change_set_dir_for_task(task_dir) / "files" / Path(*candidate.parts)
 
 
 def cleanup_task_dir(task_dir: Path) -> None:

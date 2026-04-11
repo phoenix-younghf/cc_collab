@@ -64,6 +64,39 @@ def completed_output(
     return json.dumps(payload)
 
 
+def file_change_set_metadata(
+    changed_files: list[str] | None = None,
+) -> dict[str, object]:
+    files = changed_files or ["src.txt"]
+    entries = [
+        {
+            "original_path": path,
+            "stored_path": f"file-change-set/{path}",
+            "before_hash": f"before-{index}",
+            "after_hash": f"after-{index}",
+            "change_kind": "modified",
+        }
+        for index, path in enumerate(files, start=1)
+    ]
+    return {
+        "artifact_type": "file-change-set",
+        "changed_files": files,
+        "change_set_manifest": {
+            "entries": entries,
+            "inspect_instructions": "Inspect copied files under file-change-set/.",
+            "copy_back_instructions": "Copy reviewed files back into the workspace.",
+        },
+    }
+
+
+def git_patch_metadata() -> dict[str, str]:
+    return {
+        "artifact_type": "git-patch",
+        "patch_path": "/tmp/changes.patch",
+        "apply_command": "git apply /tmp/changes.patch",
+    }
+
+
 def write_request(
     temp_root: str,
     *,
@@ -370,6 +403,8 @@ class CliIntegrationTests(TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["terminal_state"], "archived")
             self.assertIn("Delegation succeeded", result["summary"])
+            self.assertEqual(result["artifact_type"], "none")
+            self.assertIn("capability_summary", result)
             self.assertEqual(mock_run.call_count, 2)
 
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-4"), ""))
@@ -413,6 +448,8 @@ class CliRuntimeModeTests(TestCase):
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["runtime_mode"], "git-aware")
+            self.assertEqual(result["artifact_type"], "none")
+            self.assertIn("capability_summary", result)
 
     def test_run_preflight_fails_when_claude_flags_are_unsupported(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -452,6 +489,7 @@ class CliRuntimeModeTests(TestCase):
             self.assertEqual(exit_code, 1)
             self.assertEqual(result["status"], "failed")
             self.assertIn("claude", result["summary"].lower())
+            self.assertEqual(result["artifact_type"], "none")
             self.assertIn("preflight", result["capability_summary"]["status"])
             self.assertIn("install", result["remediation"].lower())
 
@@ -482,41 +520,35 @@ class CliRuntimeModeTests(TestCase):
         self.assertIn(str(diagnostic_dir), stderr.getvalue())
 
     @patch(
-        "runtime.cli.generate_patch_from_workspace_pair",
-        return_value={
-            "patch_path": "/tmp/changes.patch",
-            "apply_command": "git apply -p2 /tmp/changes.patch",
-        },
+        "runtime.cli.build_file_change_set_metadata",
+        return_value=file_change_set_metadata(),
     )
-    @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
     def test_non_git_write_isolated_uses_filesystem_copy(
         self,
-        _mock_run: object,
-        _mock_patch_pair: object,
+        _mock_change_set: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
             request = write_request(tmp, write_policy="write-isolated")
+            def fake_run(_command: object) -> tuple[str, str]:
+                (Path(tmp) / "task-1" / "isolated-copy" / "src.txt").write_text("after", encoding="utf-8")
+                return completed_output("task-1", changed_files=["src.txt"]), ""
             with patch(
                 "runtime.cli.detect_runtime_capabilities",
                 return_value=filesystem_only_caps(),
-            ):
+            ), patch("runtime.cli.run_claude", side_effect=fake_run):
                 exit_code = main(["run", "--request", str(request), "--task-root", tmp])
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["runtime_mode"], "filesystem-only")
+            self.assertEqual(result["artifact_type"], "file-change-set")
 
     @patch(
-        "runtime.cli.generate_patch_from_workspace_pair",
-        return_value={
-            "patch_path": "/tmp/changes.patch",
-            "apply_command": "git apply -p2 /tmp/changes.patch",
-        },
+        "runtime.cli.build_file_change_set_metadata",
+        return_value=file_change_set_metadata(),
     )
-    @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
-    def test_non_git_write_isolated_patch_ready_emits_patch_metadata(
+    def test_non_git_write_isolated_patch_ready_emits_file_change_set_metadata(
         self,
-        _mock_run: object,
-        mock_patch_pair: object,
+        mock_change_set: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
             request = write_request(
@@ -524,17 +556,20 @@ class CliRuntimeModeTests(TestCase):
                 write_policy="write-isolated",
                 success_terminal="commit-ready",
             )
+            def fake_run(_command: object) -> tuple[str, str]:
+                (Path(tmp) / "task-1" / "isolated-copy" / "src.txt").write_text("after", encoding="utf-8")
+                return completed_output("task-1", changed_files=["src.txt"]), ""
             with patch(
                 "runtime.cli.detect_runtime_capabilities",
                 return_value=filesystem_only_caps(),
-            ):
+            ), patch("runtime.cli.run_claude", side_effect=fake_run):
                 exit_code = main(["run", "--request", str(request), "--task-root", tmp])
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["terminal_state"], "patch-ready")
-            self.assertEqual(result["patch_path"], "/tmp/changes.patch")
-            self.assertIn("git apply", result["apply_command"])
-            mock_patch_pair.assert_called_once()
+            self.assertEqual(result["artifact_type"], "file-change-set")
+            self.assertIn("change_set_manifest", result)
+            mock_change_set.assert_called_once()
 
     @patch("runtime.cli.generate_patch", return_value={"patch_path": "/tmp/changes.patch"})
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
@@ -560,16 +595,11 @@ class CliRuntimeModeTests(TestCase):
         self.assertIn("allowed_success_terminal=patch-ready", runtime_contract)
 
     @patch(
-        "runtime.cli.generate_patch_from_workspace_pair",
-        return_value={
-            "patch_path": "/tmp/changes.patch",
-            "apply_command": "git apply -p2 /tmp/changes.patch",
-        },
+        "runtime.cli.build_git_patch_metadata_for_workspace_pair",
+        return_value=git_patch_metadata(),
     )
-    @patch("runtime.cli.run_claude", return_value=(completed_output("task-1", changed_files=["src.txt"]), ""))
     def test_degraded_git_aware_write_isolated_success_stays_git_aware(
         self,
-        _mock_run: object,
         _mock_patch_pair: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
@@ -578,30 +608,58 @@ class CliRuntimeModeTests(TestCase):
                 write_policy="write-isolated",
                 success_terminal="patch-ready",
             )
+            def fake_run(_command: object) -> tuple[str, str]:
+                (Path(tmp) / "task-1" / "isolated-copy" / "src.txt").write_text("after", encoding="utf-8")
+                return completed_output("task-1", changed_files=["src.txt"]), ""
             with patch(
                 "runtime.cli.detect_runtime_capabilities",
                 return_value=git_aware_caps(worktree_usable=False),
-            ):
+            ), patch("runtime.cli.run_claude", side_effect=fake_run):
                 exit_code = main(["run", "--request", str(request), "--task-root", tmp])
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 0)
             self.assertEqual(result["runtime_mode"], "git-aware")
+            self.assertEqual(result["artifact_type"], "git-patch")
             self.assertTrue(result["degradation_notes"])
 
     @patch(
-        "runtime.cli.generate_patch_from_workspace_pair",
-        return_value={
-            "patch_path": "/tmp/changes.patch",
-            "apply_command": "git apply -p2 /tmp/changes.patch",
-        },
+        "runtime.cli.build_file_change_set_metadata",
+        return_value=file_change_set_metadata(["src.txt", "extra.txt"]),
     )
     @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=["src.txt", "extra.txt"])
-    @patch("runtime.cli.run_claude", return_value=(completed_output("task-1"), ""))
-    def test_filesystem_only_write_in_place_patch_ready_failure_emits_patch_metadata(
+    def test_filesystem_only_write_in_place_patch_ready_failure_emits_change_set_metadata(
+        self,
+        _mock_changes: object,
+        mock_change_set: object,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                write_policy="write-in-place",
+                failure_terminal="patch-ready",
+                files=["src.txt"],
+            )
+            def fake_run(_command: object) -> tuple[str, str]:
+                (Path(tmp) / "src.txt").write_text("after", encoding="utf-8")
+                return completed_output("task-1"), ""
+            with patch(
+                "runtime.cli.detect_runtime_capabilities",
+                return_value=filesystem_only_caps(),
+            ), patch("runtime.cli.run_claude", side_effect=fake_run):
+                exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(result["terminal_state"], "patch-ready")
+            self.assertEqual(result["artifact_type"], "file-change-set")
+            self.assertIn("change_set_manifest", result)
+            mock_change_set.assert_called_once()
+
+    @patch("runtime.cli.collect_file_change_set_entries", side_effect=ValueError("boom"))
+    @patch("runtime.cli.run_claude", side_effect=RuntimeError("boom"))
+    def test_filesystem_only_change_set_failure_degrades_to_inspection_required(
         self,
         _mock_run: object,
-        _mock_changes: object,
-        mock_patch_pair: object,
+        _mock_entries: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
             request = write_request(
@@ -617,23 +675,16 @@ class CliRuntimeModeTests(TestCase):
                 exit_code = main(["run", "--request", str(request), "--task-root", tmp])
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 1)
-            self.assertEqual(result["terminal_state"], "patch-ready")
-            self.assertEqual(result["patch_path"], "/tmp/changes.patch")
-            self.assertIn("git apply", result["apply_command"])
-            mock_patch_pair.assert_called_once()
+            self.assertEqual(result["terminal_state"], "inspection-required")
+            self.assertEqual(result["artifact_type"], "none")
 
     @patch(
-        "runtime.cli.generate_patch_from_workspace_pair",
-        return_value={
-            "patch_path": "/tmp/changes.patch",
-            "apply_command": "git apply -p2 /tmp/changes.patch",
-        },
+        "runtime.cli.build_file_change_set_metadata",
+        return_value=file_change_set_metadata(["src.txt"]),
     )
-    @patch("runtime.cli.run_claude", side_effect=RuntimeError("boom"))
-    def test_filesystem_only_write_in_place_exception_emits_patch_metadata(
+    def test_filesystem_only_write_in_place_exception_emits_change_set_metadata(
         self,
-        _mock_run: object,
-        mock_patch_pair: object,
+        mock_change_set: object,
     ) -> None:
         with TemporaryDirectory() as tmp:
             request = write_request(
@@ -642,14 +693,17 @@ class CliRuntimeModeTests(TestCase):
                 failure_terminal="patch-ready",
                 files=["src.txt"],
             )
+            def fake_run(_command: object) -> tuple[str, str]:
+                (Path(tmp) / "src.txt").write_text("after", encoding="utf-8")
+                raise RuntimeError("boom")
             with patch(
                 "runtime.cli.detect_runtime_capabilities",
                 return_value=filesystem_only_caps(),
-            ):
+            ), patch("runtime.cli.run_claude", side_effect=fake_run):
                 exit_code = main(["run", "--request", str(request), "--task-root", tmp])
             result = json.loads((Path(tmp) / "task-1" / "result.json").read_text(encoding="utf-8"))
             self.assertEqual(exit_code, 1)
             self.assertEqual(result["terminal_state"], "patch-ready")
-            self.assertEqual(result["patch_path"], "/tmp/changes.patch")
-            self.assertIn("git apply", result["apply_command"])
-            mock_patch_pair.assert_called_once()
+            self.assertEqual(result["artifact_type"], "file-change-set")
+            self.assertIn("change_set_manifest", result)
+            mock_change_set.assert_called_once()
