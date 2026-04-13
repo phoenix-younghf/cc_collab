@@ -1052,6 +1052,37 @@ class UpdaterRunTests(TestCase):
             self.assertFalse(str(spawned["kwargs"]["cwd"]).startswith(str(backup_root)))
             handoff_mock.assert_called_once_with(install_root, owner_pid=updater_module.os.getpid(), helper_pid=456)
 
+    def test_windows_helper_transaction_execs_waiter_when_allowed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = _seed_staged_payload(root)
+            backup_root = root / "install-backup"
+
+            class FakeProcess:
+                pid = 789
+
+            with patch("runtime.updater.current_working_directory", return_value=install_root / "runtime"):
+                with patch("runtime.updater.begin_windows_handoff") as handoff_mock:
+                    with patch("runtime.updater.subprocess.Popen", return_value=FakeProcess()):
+                        with patch("runtime.updater.os.execv", side_effect=SystemExit(91)) as exec_mock:
+                            with self.assertRaises(SystemExit):
+                                updater_module._run_windows_helper_transaction(
+                                    install_root=install_root,
+                                    staged_root=staged_root,
+                                    backup_root=backup_root,
+                                    verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
+                                    current_version="0.4.1",
+                                    latest_version="0.4.2",
+                                    progress_messages=["Installing update..."],
+                                    allow_exec=True,
+                                )
+
+            handoff_mock.assert_called_once_with(install_root, owner_pid=updater_module.os.getpid(), helper_pid=789)
+            waiter_command = exec_mock.call_args.args[1]
+            self.assertIn("--await-result", waiter_command)
+            self.assertFalse(str(waiter_command[1]).startswith(str(install_root)))
+
     def test_run_update_validates_resolved_release_identity_before_asset_download(self) -> None:
         with TemporaryDirectory() as tmp:
             install_root = _seed_install_root(Path(tmp), version="0.4.1")

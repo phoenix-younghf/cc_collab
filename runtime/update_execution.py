@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
@@ -367,6 +368,72 @@ def _cleanup_helper_paths(install_root: Path, *, intent_path: Path) -> None:
             continue
 
 
+def _handoff_ready(install_root: Path, *, helper_pid: int) -> bool:
+    handoff_path = _handoff_record_path(install_root)
+    if not handoff_path.exists():
+        return False
+    try:
+        payload = json.loads(handoff_path.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return payload.get("helper_pid") == helper_pid and payload.get("transferred") is True
+
+
+def _wait_for_handoff(install_root: Path, *, helper_pid: int, timeout_seconds: int = 30) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if _handoff_ready(install_root, helper_pid=helper_pid):
+            return
+        time.sleep(0.05)
+    raise RuntimeError("Timed out waiting for Windows update handoff to become active.")
+
+
+def await_transaction_result(
+    result_path: Path,
+    *,
+    current_version: str,
+    latest_version: str,
+    progress_messages: list[str],
+    timeout_seconds: int = 300,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if result_path.exists():
+            result = read_transaction_result(result_path)
+            if result.ok:
+                print(f"Current version: {current_version}")
+                print(f"Latest version: {latest_version}")
+                for message in progress_messages:
+                    print(message)
+                print(f"Updated ccollab to {latest_version}")
+                return 0
+
+            print(f"Current version: {current_version}", file=sys.stderr)
+            print(f"Latest version: {latest_version}", file=sys.stderr)
+            for message in progress_messages:
+                print(message, file=sys.stderr)
+            print(
+                f"Update failed: {result.error or 'post-install verification failed'}",
+                file=sys.stderr,
+            )
+            if result.rollback_performed and result.rollback_succeeded:
+                print("Previous installation was restored.", file=sys.stderr)
+            elif result.rollback_performed and result.rollback_succeeded is False:
+                print("Rollback failed; manual repair may be required.", file=sys.stderr)
+            else:
+                print("Existing installation was left unchanged.", file=sys.stderr)
+            return 1
+        time.sleep(0.05)
+
+    print(
+        f"Update failed: helper result {result_path} was not produced before timeout.",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def run_helper_from_intent(intent_path: Path) -> int:
     payload = json.loads(intent_path.read_text(encoding="utf-8-sig"))
     install_root = Path(str(payload["install_root"]))
@@ -377,6 +444,7 @@ def run_helper_from_intent(intent_path: Path) -> int:
     result_path = Path(str(result_path_raw)) if isinstance(result_path_raw, str) else None
 
     try:
+        _wait_for_handoff(install_root, helper_pid=os.getpid())
         result = apply_update_transaction(
             install_root=install_root,
             staged_root=staged_root,
@@ -392,14 +460,26 @@ def run_helper_from_intent(intent_path: Path) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m runtime.update_execution")
-    parser.add_argument("--swap-intent", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--swap-intent")
+    mode.add_argument("--await-result")
+    parser.add_argument("--current-version")
+    parser.add_argument("--latest-version")
+    parser.add_argument("--progress-message", action="append", default=[])
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return run_helper_from_intent(Path(args.swap_intent))
+    if args.swap_intent:
+        return run_helper_from_intent(Path(args.swap_intent))
+    return await_transaction_result(
+        Path(args.await_result),
+        current_version=args.current_version or "unknown",
+        latest_version=args.latest_version or "unknown",
+        progress_messages=list(args.progress_message),
+    )
 
 
 if __name__ == "__main__":

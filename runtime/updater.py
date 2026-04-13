@@ -7,6 +7,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -1228,6 +1229,10 @@ def _run_windows_helper_transaction(
     staged_root: Path,
     backup_root: Path,
     verification_context: VerificationContext,
+    current_version: str | None = None,
+    latest_version: str | None = None,
+    progress_messages: list[str] | None = None,
+    allow_exec: bool = False,
 ) -> UpdateTransactionResult:
     helper_root = Path(
         tempfile.mkdtemp(
@@ -1270,6 +1275,20 @@ def _run_windows_helper_transaction(
                 error=str(exc),
             )
         begin_windows_handoff(install_root, owner_pid=os.getpid(), helper_pid=process.pid)
+        if allow_exec:
+            waiter_command = [
+                sys.executable,
+                str(helper_path),
+                "--await-result",
+                str(result_path),
+                "--current-version",
+                current_version or "unknown",
+                "--latest-version",
+                latest_version or "unknown",
+            ]
+            for message in progress_messages or []:
+                waiter_command.extend(["--progress-message", message])
+            os.execv(sys.executable, waiter_command)
         return_code = process.wait()
         if not result_path.exists():
             return UpdateTransactionResult(
@@ -1452,6 +1471,10 @@ def run_update(
                 staged_root=staged_install_root,
                 backup_root=work_area.backup_root,
                 verification_context=verification_context,
+                current_version=plan.current_version,
+                latest_version=plan.latest_version,
+                progress_messages=progress_messages,
+                allow_exec=True,
             )
         else:
             transaction = apply_update_transaction(
