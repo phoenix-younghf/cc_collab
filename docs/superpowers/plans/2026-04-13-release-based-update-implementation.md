@@ -109,6 +109,19 @@ class VersioningTests(TestCase):
             active_root = Path(tmp) / "active-install"
             (active_root / "runtime").mkdir(parents=True)
             (active_root / "bin").mkdir()
+            write_install_metadata(
+                active_root,
+                InstallMetadata(
+                    version="0.4.2",
+                    channel="stable",
+                    repo="owner/cc_collab",
+                    platform="linux-x64",
+                    installed_at="2026-04-13T12:34:56Z",
+                    asset_name="unknown",
+                    asset_sha256="unknown",
+                    install_root=str(active_root),
+                ),
+            )
             discovery = discover_install_root(
                 active_runtime_root=str(active_root),
                 env={},
@@ -116,6 +129,21 @@ class VersioningTests(TestCase):
             )
             self.assertEqual(discovery.install_root, active_root)
             self.assertEqual(discovery.status, "installed")
+            self.assertEqual(discovery.version, "0.4.2")
+
+    def test_discover_install_root_treats_metadata_less_active_payload_as_legacy_install(self) -> None:
+        with TemporaryDirectory() as tmp:
+            active_root = Path(tmp) / "active-install"
+            (active_root / "runtime").mkdir(parents=True)
+            (active_root / "bin").mkdir()
+            discovery = discover_install_root(
+                active_runtime_root=str(active_root),
+                env={},
+                os_name="posix",
+            )
+            self.assertEqual(discovery.install_root, active_root)
+            self.assertEqual(discovery.status, "legacy-install")
+            self.assertEqual(discovery.version, "unknown")
 
     def test_discover_install_root_returns_legacy_when_payload_exists_without_metadata(self) -> None:
         with TemporaryDirectory() as tmp:
