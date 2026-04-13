@@ -151,6 +151,13 @@ def _normalize_root(candidate: str | Path | None) -> Path | None:
     return Path(value).expanduser()
 
 
+def canonical_install_root(candidate: str | Path) -> Path:
+    normalized = _normalize_root(candidate)
+    if normalized is None:
+        raise ValueError("install root must be a non-empty path")
+    return normalized.resolve()
+
+
 def get_active_runtime_root(module_file: str | Path | None = None) -> Path | None:
     module_path = Path(__file__ if module_file is None else module_file).expanduser()
     install_root = module_path.parent.parent

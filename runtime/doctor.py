@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Callable
 
 from runtime.capabilities import (
+    ClaudeCapability,
+    PythonCapability,
     detect_claude_capabilities,
     detect_git_capabilities,
     detect_python_capability,
@@ -68,6 +70,26 @@ def _normalize_path_entry(value: str, os_name: str) -> str:
     if os_name == "nt":
         return normalized.rstrip("\\/").lower()
     return normalized.rstrip("/")
+
+
+def detect_update_capabilities(
+    *,
+    command_exists: Callable[[str], bool] | None = None,
+    flag_probe: Callable[[str], bool] | None = None,
+    os_name: str | None = None,
+) -> tuple[PythonCapability, ClaudeCapability]:
+    current_os = os.name if os_name is None else os_name
+    exists = command_exists or (lambda name: shutil.which(name) is not None)
+    return (
+        detect_python_capability(
+            os_name=current_os,
+            command_exists=exists,
+        ),
+        detect_claude_capabilities(
+            command_exists=exists,
+            flag_probe=flag_probe,
+        ),
+    )
 
 
 def run_doctor(

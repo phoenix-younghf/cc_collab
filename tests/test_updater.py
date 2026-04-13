@@ -2,21 +2,41 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+from runtime.capabilities import ClaudeCapability, PythonCapability
 from runtime.release_manifest import parse_release_manifest
 from runtime.updater import (
+    ChecksumMismatchError,
+    CompatibilityError,
     DownloadError,
     GhAuthenticationError,
     GhPrerequisiteError,
+    InvalidArchiveError,
+    InvalidPayloadError,
     ReleaseIdentityError,
     RepoAccessError,
     ResolvedGitHubRelease,
+    UpdateLockedError,
+    acquire_update_lock,
+    begin_windows_handoff,
+    create_update_work_area,
     download_platform_asset,
     download_release_asset,
     download_release_manifest,
+    extract_release_archive,
+    lock_handoff_active,
+    read_update_lock_record,
+    recover_or_acquire_lock,
     resolve_latest_stable_release,
+    run_compatibility_preflight,
+    stage_release_asset,
+    stage_release_manifest,
+    validate_staged_payload,
+    verify_downloaded_archive,
 )
 
 
@@ -446,3 +466,205 @@ class UpdaterReleaseResolutionTests(TestCase):
             runner.download_calls,
             [("owner/cc_collab", 123, "ccollab-windows-x64.zip", 111)],
         )
+
+
+def _seed_install_root(root: Path, *, version: str = "0.4.1") -> Path:
+    install_root = root / "install"
+    (install_root / "runtime").mkdir(parents=True, exist_ok=True)
+    (install_root / "bin").mkdir(parents=True, exist_ok=True)
+    (install_root / "runtime" / "version.txt").write_text(version, encoding="utf-8")
+    return install_root
+
+
+def _snapshot_tree(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        snapshot[str(path.relative_to(root))] = path.read_text(encoding="utf-8")
+    return snapshot
+
+
+def _make_manifest(
+    *,
+    version: str = "0.4.2",
+    python_min: str = "3.9",
+    required_flags: tuple[str, ...] = ("--print",),
+) -> object:
+    return parse_release_manifest(
+        {
+            "version": version,
+            "channel": "stable",
+            "repo": "owner/cc_collab",
+            "tag": f"v{version}",
+            "release_id": 123,
+            "published_at": "2026-04-13T12:00:00Z",
+            "compatibility": {
+                "python_min": python_min,
+                "claude_required_flags": list(required_flags),
+            },
+            "assets": [
+                {
+                    "platform": "windows-x64",
+                    "name": "ccollab-windows-x64.zip",
+                    "asset_id": 111,
+                    "size_bytes": 42,
+                    "sha256": "a" * 64,
+                },
+                {
+                    "platform": "macos-universal",
+                    "name": "ccollab-macos-universal.tar.gz",
+                    "asset_id": 112,
+                    "size_bytes": 84,
+                    "sha256": "b" * 64,
+                },
+                {
+                    "platform": "linux-x64",
+                    "name": "ccollab-linux-x64.tar.gz",
+                    "asset_id": 113,
+                    "size_bytes": 126,
+                    "sha256": "c" * 64,
+                },
+            ],
+        }
+    )
+
+
+class UpdaterTransactionTests(TestCase):
+    def test_create_update_work_area_rejects_cross_volume_swap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            with patch("runtime.updater.same_filesystem", return_value=False):
+                with self.assertRaises(RuntimeError):
+                    create_update_work_area(install_root)
+
+    def test_acquire_update_lock_blocks_second_owner(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock = acquire_update_lock(install_root)
+            with self.assertRaises(UpdateLockedError):
+                acquire_update_lock(install_root)
+            lock.release()
+
+    def test_checksum_mismatch_leaves_install_root_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root)
+            archive_path = root / "payload.zip"
+            archive_path.write_bytes(b"payload")
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(ChecksumMismatchError):
+                verify_downloaded_archive(
+                    archive_path=archive_path,
+                    expected_sha256="0" * 64,
+                    expected_size=len(b"payload"),
+                )
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_manifest_fetch_failure_leaves_install_root_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(DownloadError):
+                stage_release_manifest(
+                    install_root=install_root,
+                    downloader=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        DownloadError("manifest fetch failed")
+                    ),
+                )
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_asset_download_failure_leaves_install_root_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(DownloadError):
+                stage_release_asset(
+                    install_root=install_root,
+                    downloader=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                        DownloadError("asset download failed")
+                    ),
+                )
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_invalid_archive_leaves_install_root_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root)
+            broken_archive = root / "broken.zip"
+            broken_archive.write_bytes(b"not-a-zip")
+            stage_root = root / "staged"
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidArchiveError):
+                extract_release_archive(broken_archive, stage_root)
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_acquire_update_lock_records_owner_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock = acquire_update_lock(install_root, pid=1234, hostname="test-host")
+            record = read_update_lock_record(install_root)
+            self.assertEqual(record.pid, 1234)
+            self.assertEqual(record.hostname, "test-host")
+            self.assertEqual(record.install_root, str(install_root.resolve()))
+            self.assertIsNotNone(record.acquired_at)
+            lock.release()
+
+
+class UpdaterCompatibilityTests(TestCase):
+    def test_old_python_rejected(self) -> None:
+        manifest = _make_manifest(python_min="3.12")
+        with patch(
+            "runtime.updater.detect_python_capability",
+            return_value=PythonCapability(available=True, launcher="python3", remediation=None),
+        ):
+            with patch("runtime.updater.python_version_tuple", return_value=(3, 11, 9)):
+                with self.assertRaises(CompatibilityError):
+                    run_compatibility_preflight(manifest)
+
+    def test_missing_required_claude_flag_rejected(self) -> None:
+        manifest = _make_manifest(required_flags=("--json-schema",))
+        with patch(
+            "runtime.updater.detect_claude_capabilities",
+            return_value=ClaudeCapability(
+                available=True,
+                missing_flags=["--json-schema"],
+                remediation="upgrade claude",
+            ),
+        ):
+            with self.assertRaises(CompatibilityError):
+                run_compatibility_preflight(manifest)
+
+
+class UpdaterPayloadValidationTests(TestCase):
+    def test_missing_runtime_directory_rejects_staged_payload_before_swap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = root / "staged-install"
+            staged_root.mkdir()
+            (staged_root / "bin").mkdir()
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidPayloadError):
+                validate_staged_payload(staged_root)
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+
+class UpdaterHandoffTests(TestCase):
+    def test_begin_windows_handoff_marks_lock_as_transferred(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock = acquire_update_lock(install_root, pid=123, hostname="owner-host")
+            record = begin_windows_handoff(install_root, owner_pid=123, helper_pid=456)
+            self.assertEqual(record.helper_pid, 456)
+            with patch("runtime.updater._pid_is_alive", side_effect=lambda pid: pid == 456):
+                self.assertTrue(lock_handoff_active(install_root))
+            lock.release()
+
+    def test_stale_lock_recovery_refuses_active_handoff(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock = acquire_update_lock(install_root, pid=123, hostname="owner-host")
+            begin_windows_handoff(install_root, owner_pid=123, helper_pid=456)
+            with patch("runtime.updater._pid_is_alive", side_effect=lambda pid: pid == 456):
+                with self.assertRaises(UpdateLockedError):
+                    recover_or_acquire_lock(install_root, current_pid=999)
+            lock.release()
