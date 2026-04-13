@@ -14,13 +14,12 @@ _SEMVER_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _AUTH_ERROR_MARKERS = ("gh auth login", "not logged", "authentication failed")
 _REPO_ACCESS_MARKERS = ("http 404", "http 403", "not found", "resource not accessible")
 _DOWNLOAD_REPO_ACCESS_MARKERS = (
-    "http 404",
-    "http 403",
     "repository not found",
     "could not resolve to a repository",
     "resource not accessible by integration",
     "access denied to repository",
 )
+_ASSET_LOOKUP_REPO_ACCESS_MARKERS = ("http 404", "http 403", *_DOWNLOAD_REPO_ACCESS_MARKERS)
 
 ReleaseListRunner = Callable[[str], list[dict[str, Any]]]
 ReleaseDownloadRunner = Callable[[str, int, str, int | None], bytes]
@@ -79,12 +78,10 @@ def _default_release_list_runner(repo: str) -> list[dict[str, Any]]:
     result = subprocess.run(
         [
             "gh",
-            "release",
-            "list",
-            "--repo",
-            repo,
-            "--json",
-            "databaseId,tagName,isDraft,isPrerelease,publishedAt",
+            "api",
+            "--paginate",
+            "--slurp",
+            f"repos/{repo}/releases?per_page=100",
         ],
         text=True,
         capture_output=True,
@@ -101,9 +98,12 @@ def _default_release_list_runner(repo: str) -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise ReleaseLookupError("gh release list returned an unexpected payload")
     items: list[dict[str, Any]] = []
-    for item in payload:
-        if isinstance(item, dict):
-            items.append(item)
+    for page in payload:
+        if not isinstance(page, list):
+            raise ReleaseLookupError("gh release list returned an unexpected paginated payload")
+        for item in page:
+            if isinstance(item, dict):
+                items.append(item)
     return items
 
 
@@ -129,7 +129,10 @@ def _run_gh_json(args: list[str]) -> Any:
 
 
 def _resolve_named_asset_id(repo: str, release_id: int, asset_name: str) -> int:
-    payload = _run_gh_json(["api", f"repos/{repo}/releases/{release_id}/assets"])
+    try:
+        payload = _run_gh_json(["api", f"repos/{repo}/releases/{release_id}/assets"])
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise _translate_release_asset_lookup_error(repo, exc) from exc
     if not isinstance(payload, list):
         raise DownloadError(f"release {release_id} assets payload for {repo} was invalid")
     for item in payload:
@@ -143,7 +146,10 @@ def _resolve_named_asset_id(repo: str, release_id: int, asset_name: str) -> int:
 
 
 def _validate_bound_asset(repo: str, release_id: int, asset_id: int, asset_name: str) -> None:
-    payload = _run_gh_json(["api", f"repos/{repo}/releases/{release_id}/assets"])
+    try:
+        payload = _run_gh_json(["api", f"repos/{repo}/releases/{release_id}/assets"])
+    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+        raise _translate_release_asset_lookup_error(repo, exc) from exc
     if not isinstance(payload, list):
         raise DownloadError(f"release {release_id} assets payload for {repo} was invalid")
     for item in payload:
@@ -227,6 +233,21 @@ def _translate_release_download_error(
         return RepoAccessError(f"Authenticated GitHub CLI could not access {repo} releases.")
     detail = _command_text(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
     return DownloadError(detail or f"Failed to download release asset from {repo}")
+
+
+def _translate_release_asset_lookup_error(
+    repo: str,
+    exc: FileNotFoundError | subprocess.CalledProcessError,
+) -> UpdaterError:
+    if isinstance(exc, FileNotFoundError):
+        return GhPrerequisiteError("Install GitHub CLI and run 'gh auth login'.")
+    markers = _called_process_markers(exc)
+    if any(marker in markers for marker in _AUTH_ERROR_MARKERS):
+        return GhAuthenticationError("Run 'gh auth login' for github.com, then retry.")
+    if any(marker in markers for marker in _ASSET_LOOKUP_REPO_ACCESS_MARKERS):
+        return RepoAccessError(f"Authenticated GitHub CLI could not access {repo} releases.")
+    detail = _command_text(exc)
+    return DownloadError(detail or f"Failed to resolve release assets from {repo}")
 
 
 def _release_id(payload: dict[str, Any]) -> int:

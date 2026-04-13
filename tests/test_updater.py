@@ -80,15 +80,15 @@ class FakeGh:
 
 
 class UpdaterReleaseResolutionTests(TestCase):
-    def test_resolve_latest_stable_release_uses_canonical_repo_without_limit_ceiling(self) -> None:
-        release_list = [
-            _stable_release_payload(0, 4, patch_level, release_id=1000 + patch_level)
-            for patch_level in range(150)
+    def test_resolve_latest_stable_release_paginates_all_releases_via_gh_api(self) -> None:
+        release_pages = [
+            [_stable_release_payload(0, 4, patch_level, release_id=1000 + patch_level) for patch_level in range(100)],
+            [_stable_release_payload(0, 4, patch_level, release_id=1000 + patch_level) for patch_level in range(100, 150)],
         ]
 
         def fake_run(args: list[str], *, text: bool, capture_output: bool, check: bool) -> subprocess.CompletedProcess[str]:
-            self.assertEqual(args[:4], ["gh", "release", "list", "--repo"])
-            self.assertEqual(args[4], "phoenix-younghf/cc_collab")
+            self.assertEqual(args[:4], ["gh", "api", "--paginate", "--slurp"])
+            self.assertEqual(args[4], "repos/phoenix-younghf/cc_collab/releases?per_page=100")
             self.assertNotIn("--limit", args)
             self.assertTrue(text)
             self.assertTrue(capture_output)
@@ -96,7 +96,7 @@ class UpdaterReleaseResolutionTests(TestCase):
             return subprocess.CompletedProcess(
                 args=args,
                 returncode=0,
-                stdout=json.dumps(release_list),
+                stdout=json.dumps(release_pages),
                 stderr="",
             )
 
@@ -205,15 +205,77 @@ class UpdaterReleaseResolutionTests(TestCase):
                 runner=runner.run_download,
             )
 
-    def test_download_release_manifest_reports_http_404_repo_access_denied(self) -> None:
-        runner = FakeGh(stderr="HTTP 404", returncode=1)
-        with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
-            download_release_manifest(
-                repo="owner/cc_collab",
-                release_id=123,
-                asset_name="ccollab-manifest.json",
-                runner=runner.run_download,
+    def test_download_release_manifest_default_runner_maps_asset_list_http_404_to_repo_access_error(self) -> None:
+        def fake_run(args: list[str], *, capture_output: bool, check: bool) -> subprocess.CompletedProcess[bytes]:
+            self.assertEqual(args[:2], ["gh", "api"])
+            self.assertEqual(args[2], "repos/owner/cc_collab/releases/123/assets")
+            self.assertTrue(capture_output)
+            self.assertFalse(check)
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout=b"",
+                stderr=b"HTTP 404",
             )
+
+        with patch("runtime.updater.subprocess.run", side_effect=fake_run):
+            with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+                download_release_manifest(
+                    repo="owner/cc_collab",
+                    release_id=123,
+                    asset_name="ccollab-manifest.json",
+                )
+
+    def test_download_release_asset_default_runner_maps_asset_validation_http_403_to_repo_access_error(self) -> None:
+        def fake_run(args: list[str], *, capture_output: bool, check: bool) -> subprocess.CompletedProcess[bytes]:
+            self.assertEqual(args[:2], ["gh", "api"])
+            self.assertEqual(args[2], "repos/owner/cc_collab/releases/123/assets")
+            self.assertTrue(capture_output)
+            self.assertFalse(check)
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout=b"",
+                stderr=b"HTTP 403",
+            )
+
+        with patch("runtime.updater.subprocess.run", side_effect=fake_run):
+            with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+                download_release_asset(
+                    repo="owner/cc_collab",
+                    release_id=123,
+                    asset_id=111,
+                    asset_name="ccollab-windows-x64.zip",
+                )
+
+    def test_download_release_asset_default_runner_keeps_final_fetch_http_404_as_download_error(self) -> None:
+        def fake_run(args: list[str], *, capture_output: bool, check: bool) -> subprocess.CompletedProcess[bytes]:
+            self.assertEqual(args[:2], ["gh", "api"])
+            self.assertTrue(capture_output)
+            self.assertFalse(check)
+            if args[2] == "repos/owner/cc_collab/releases/123/assets":
+                return subprocess.CompletedProcess(
+                    args=args,
+                    returncode=0,
+                    stdout=b'[{"name":"ccollab-windows-x64.zip","id":111}]',
+                    stderr=b"",
+                )
+            self.assertEqual(args[2:], ["-H", "Accept: application/octet-stream", "repos/owner/cc_collab/releases/assets/111"])
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=1,
+                stdout=b"",
+                stderr=b"HTTP 404",
+            )
+
+        with patch("runtime.updater.subprocess.run", side_effect=fake_run):
+            with self.assertRaisesRegex(DownloadError, "HTTP 404"):
+                download_release_asset(
+                    repo="owner/cc_collab",
+                    release_id=123,
+                    asset_id=111,
+                    asset_name="ccollab-windows-x64.zip",
+                )
 
     def test_download_release_manifest_reports_missing_asset_as_download_error(self) -> None:
         runner = FakeGh(stderr="asset not found", returncode=1)
@@ -260,17 +322,6 @@ class UpdaterReleaseResolutionTests(TestCase):
 
     def test_download_platform_asset_reports_repo_access_denied(self) -> None:
         runner = FakeGh(stderr="repository not found", returncode=1)
-        with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
-            download_release_asset(
-                repo="owner/cc_collab",
-                release_id=123,
-                asset_id=111,
-                asset_name="ccollab-windows-x64.zip",
-                runner=runner.run_download,
-            )
-
-    def test_download_platform_asset_reports_http_403_repo_access_denied(self) -> None:
-        runner = FakeGh(stderr="HTTP 403", returncode=1)
         with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
             download_release_asset(
                 repo="owner/cc_collab",
