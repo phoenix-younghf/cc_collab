@@ -17,6 +17,7 @@ The first supported release backend is a private GitHub.com repository. Client-s
 - Updating Claude CLI automatically
 - Requiring a local source checkout for upgrades
 - Binding the client update protocol directly to GitHub API specifics
+- Refreshing out-of-root copied Windows skill installs as part of the v1 update transaction
 
 ## Product Requirements
 
@@ -39,6 +40,10 @@ The first supported release backend is a private GitHub.com repository. Client-s
 - Failed downloads, checksum mismatches, bad archives, and failed validation must leave the existing installation unchanged.
 - If replacement succeeds but post-install verification fails, the updater must roll back to the previous install root.
 - Launchers remain thin shims. The replaceable payload lives under the install root.
+- The update transaction covers the install root only. In v1, launchers are not rewritten during normal updates, and out-of-root copied skill installs are not part of the rollback transaction.
+- Staging and backup directories must live under the install root parent on the same filesystem as the install root. The final swap must use rename-based semantics only. If same-volume rename is not possible, the updater must fail before mutating the current install.
+- The updater must acquire a cross-process update lock before performing network or filesystem mutation.
+- The updater must perform dependency compatibility preflight before mutating the install root.
 
 ## High-Level Design
 
@@ -60,8 +65,11 @@ The release system has five layers:
    - `ccollab update` checks GitHub release state through `gh`, downloads the correct asset, verifies it, stages it, replaces the install root, and rolls back on failure.
 
 5. **Launcher contract**
-   - `~/.local/bin/ccollab` and `~/.local/bin/ccollab.cmd` remain stable entrypoints.
-   - They continue to point at the active install root payload.
+   - macOS / Linux launcher path: `~/.local/bin/ccollab`
+   - Windows launcher path: `%USERPROFILE%\.local\bin\ccollab.cmd`
+   - Launchers continue to point at a stable install root path and are not rewritten during normal updates.
+   - If a launcher is missing or broken, `ccollab update` reports actionable remediation rather than trying to repair it transactionally in v1.
+   - On Unix, the installed skill symlink continues to point into the active install root after update. On Windows, the copied skill directory under `%CODEX_HOME%` is outside the v1 update transaction.
 
 ## Release Contract
 
@@ -70,6 +78,18 @@ The release system has five layers:
 - Use semantic versions.
 - Git tags follow `vX.Y.Z`, for example `v0.4.2`.
 - v1 supports only the `stable` channel.
+
+### Stable Release Selection
+
+For v1, `stable` means:
+
+- the GitHub release is not a draft
+- the GitHub release is not marked prerelease
+- the release tag matches `v<manifest.version>`
+- the release manifest declares `channel: stable`
+- when multiple stable releases exist, the updater selects the highest semantic version, not the most recently published timestamp
+
+Any mismatch between resolved release tag, manifest version, manifest channel, release ID, or selected asset metadata is a hard failure.
 
 ### Release Assets
 
@@ -89,26 +109,40 @@ The manifest is the client-facing release contract. A representative payload:
   "version": "0.4.2",
   "channel": "stable",
   "repo": "owner/cc_collab",
+  "tag": "v0.4.2",
+  "release_id": 123456789,
   "published_at": "2026-04-13T12:00:00Z",
+  "compatibility": {
+    "python_min": "3.9",
+    "claude_required_flags": ["--print", "--output-format", "--json-schema", "--add-dir", "--append-system-prompt", "--agents"]
+  },
   "assets": [
     {
       "platform": "windows-x64",
       "name": "ccollab-windows-x64.zip",
+      "asset_id": 111,
+      "size_bytes": 1234567,
       "sha256": "..."
     },
     {
       "platform": "macos-universal",
       "name": "ccollab-macos-universal.tar.gz",
+      "asset_id": 112,
+      "size_bytes": 1234567,
       "sha256": "..."
     },
     {
       "platform": "linux-x64",
       "name": "ccollab-linux-x64.tar.gz",
+      "asset_id": 113,
+      "size_bytes": 1234567,
       "sha256": "..."
     }
   ]
 }
 ```
+
+The updater must resolve one concrete release through `gh`, download the manifest asset from that release, validate that the manifest matches the resolved release metadata, and then download the selected platform asset from that same resolved release instance.
 
 ### Payload Layout
 
@@ -149,6 +183,18 @@ If this file is missing but the install root exists, the runtime treats the inst
 
 Legacy installs are still upgradeable.
 
+### Install Discovery
+
+The install root discovery contract for `ccollab version` and `ccollab update` is:
+
+1. If the currently running `ccollab` process can identify its active runtime root and that path contains a valid install payload, use it.
+2. If `CCOLLAB_RUNTIME_ROOT` is set and points to a valid install payload, treat it as an explicit administrative override and use it.
+3. Otherwise use the platform-default install root from `resolve_paths()`.
+4. If the discovered install root contains a valid payload but no `install-metadata.json`, treat it as a legacy install.
+5. If no valid install root is found, fail with install remediation instead of guessing.
+
+v1 supports one install root per user. If multiple conflicting install roots are discovered, the updater must fail with an actionable error rather than selecting one heuristically.
+
 ## Command Behavior
 
 ### `ccollab version`
@@ -187,8 +233,9 @@ Responsibilities:
 - Download the platform asset
 - Verify checksum
 - Replace the install root safely
-- Rebuild launcher and skill install if needed
 - Run post-install verification
+- Do not rewrite launchers during normal update
+- Do not include out-of-root Windows skill copies in the transactional rollback scope
 
 Representative success output:
 
@@ -231,28 +278,49 @@ Existing installation was left unchanged.
   - `Authenticated GitHub CLI could not access owner/cc_collab releases.`
 - Missing install root:
   - v1 returns an actionable error and directs the user to the normal install flow.
+- Broken launcher:
+  - `Launcher is missing or unhealthy. Reinstall ccollab to repair the launcher, then retry.`
+- Multiple install roots:
+  - `Multiple ccollab installs were detected. Set CCOLLAB_RUNTIME_ROOT to the intended install and retry.`
+- Dependency incompatibility:
+  - `This release requires a newer local runtime dependency. Fix the reported Python or Claude requirement, then retry.`
 
 ## Update Flow
 
-1. Detect platform and install root.
-2. Read `install-metadata.json` if present.
-3. Verify `gh` exists and is authenticated.
-4. Query the latest stable release for the configured repository.
-5. Download `ccollab-manifest.json`.
-6. Parse manifest and select the asset for the current platform.
-7. Compare the installed version to the manifest version.
-8. If already current, exit cleanly.
-9. Download the platform archive to a temp directory.
-10. Verify SHA256 against the manifest.
-11. Extract into a staging directory.
-12. Validate required payload structure.
-13. Move the current install root to a backup location.
-14. Move the staged payload into the install root.
-15. Refresh launcher and skill installation.
-16. Write new `install-metadata.json`.
-17. Run `ccollab doctor`.
-18. On success, delete the backup.
-19. On failure after replacement, restore the backup and report the rollback.
+1. Detect platform and install root through the install discovery contract.
+2. Canonicalize the resolved install root path.
+3. Acquire the update lock near the canonical install root parent.
+4. Read `install-metadata.json` if present.
+5. Verify the active launcher is healthy enough to support an installed update flow.
+6. Verify `gh` exists and is authenticated.
+7. Resolve the latest stable release for the configured repository by highest semantic version among non-draft, non-prerelease releases.
+8. Download `ccollab-manifest.json` from that resolved release.
+9. Parse the manifest and verify `repo`, `channel`, `tag`, `release_id`, and selected asset metadata against the resolved release.
+10. Run compatibility preflight using the manifest compatibility contract and local dependency checks.
+11. Compare the installed version to the manifest version.
+12. If already current, exit cleanly.
+13. Create an update work area under the install root parent on the same filesystem as the install root.
+14. Download the platform archive into that work area from the same resolved release.
+15. Verify the archive SHA256 and size against the manifest.
+16. Extract into a staging directory under the same-volume work area.
+17. Validate required payload structure.
+18. Write the new `install-metadata.json` into the staged payload before swap.
+19. Relocate the updater process working directory outside the install root, staging directory, and backup directory before swap preparation completes.
+20. Perform the install-root swap using rename-based semantics only: rename current install root to backup, then rename staged payload to install root.
+21. Run post-install verification by executing the newly installed payload launcher directly from the install root in a fresh child process.
+22. On success, delete the backup and release the lock.
+23. On failure after replacement, restore the backup and report the rollback result.
+
+The final swap must be executed from a process context that does not depend on the tree being renamed. Both the updater and any helper process must run with a working directory outside the install root, staging directory, and backup directory.
+
+For Windows-safe replacement, the normative protocol is:
+
+1. the parent updater stages the release, validates it, writes staged metadata, persists swap intent, and then changes to a neutral working directory
+2. the parent updater transfers update-lock ownership to the helper using a normative handoff record or an inherited OS-backed lock handle
+3. the parent updater exits so it no longer holds open handles into the active install tree
+4. a short-lived helper process launched from outside the install tree performs the rename-only swap, rollback if needed, and post-install verification
+
+If this protocol cannot be satisfied, the updater must fail without mutating the current install.
 
 ## Rollback Model
 
@@ -263,19 +331,61 @@ These failures must not modify the current installation:
 - manifest fetch failure
 - asset download failure
 - checksum mismatch
+- size mismatch
 - archive extraction failure
 - invalid payload structure
+- staged metadata generation failure
+- release/manifest identity mismatch
+- compatibility preflight failure
+- inability to obtain the update lock
+- inability to create same-volume staging or backup paths
 
 ### Rollback Failures
 
 If the install root has already been replaced, these failures trigger rollback:
 
-- launcher refresh failure
-- skill refresh failure
-- metadata write failure
 - post-install `ccollab doctor` failure
+- post-install launcher execution failure
+- helper-process swap failure after the original install root has been renamed
 
 The updater should report both the upgrade failure and whether rollback succeeded.
+
+## Concurrency and Locking
+
+- `ccollab update` must acquire an exclusive lock file near the install root parent before network or filesystem mutation.
+- The lock record should include PID, hostname, install root, and timestamp.
+- If a lock exists and the owning process is still alive, concurrent updates must fail immediately.
+- If a lock is stale and the owning process no longer exists, the updater may reclaim it and record that recovery in the update log.
+- Read-only commands such as `ccollab version` are allowed during an active update, but they must not mutate metadata or lock state.
+- The lock path is derived only after canonical install-root discovery. Implementations must not lock a guessed or pre-canonical path.
+- During Windows helper handoff, stale-lock recovery must honor the persisted handoff record and must not reclaim the lock while the helper is the active swap owner.
+
+## Compatibility Preflight
+
+Before any install-root mutation, the updater must verify:
+
+- local Python satisfies `manifest.compatibility.python_min`
+- local Claude CLI exists
+- local Claude CLI supports `manifest.compatibility.claude_required_flags`
+
+If compatibility preflight fails, the updater must exit before staging or replacement. Git capability remains optional and must not block updates.
+
+## Post-Install Verification
+
+The rollback gate for v1 is one exact command path:
+
+- macOS / Linux: `<install_root>/bin/ccollab doctor`
+- Windows argument vector: `["cmd", "/c", "<install_root>\\bin\\ccollab.cmd", "doctor"]`
+
+Verification requirements:
+
+- the command runs in a fresh child process
+- `CCOLLAB_RUNTIME_ROOT` is set to the newly installed install root
+- success means exit code `0` within a bounded timeout
+- stdout and stderr are recorded in the update log
+- stderr alone does not fail verification if the exit code is `0`
+
+Using the shell PATH launcher as the rollback gate is not allowed in v1.
 
 ## Implementation Structure
 
@@ -290,12 +400,18 @@ The updater should report both the upgrade failure and whether rollback succeede
   - manifest parsing
   - manifest validation
   - platform asset lookup
+  - release identity validation
 
 - `runtime/updater.py`
   - `gh` integration
+  - stable release resolution
   - download logic
   - checksum verification
+  - install-root discovery and canonicalization
+  - update locking
+  - compatibility preflight
   - staging, replacement, and rollback
+  - helper-process handoff when direct swap is unsafe
 
 ### Modified Modules
 
@@ -335,9 +451,19 @@ The updater should report both the upgrade failure and whether rollback succeede
   - fake `gh` success path
   - auth failure
   - repo access failure
+  - draft / prerelease rejection
+  - semver-based stable selection
+  - release/manifest identity mismatch
   - checksum mismatch
+  - size mismatch
   - invalid archive
+  - same-volume staging enforcement
+  - update lock contention
+  - canonical install-root locking
+  - compatibility preflight failure
   - rollback after post-install failure
+  - helper-process handoff when direct rename is unsafe
+  - update invoked from inside the install root
 
 ### CLI Tests
 
@@ -357,6 +483,7 @@ The updater should report both the upgrade failure and whether rollback succeede
 
 - validate release payload structure
 - validate manifest contents
+- validate release ID, tag, and asset identity fields
 - confirm archive names match the client platform mapping
 
 All GitHub integration tests should use fake `gh` shims. The test suite should not require real network access or real GitHub credentials.
@@ -377,6 +504,14 @@ Mitigation:
 - keep GitHub logic confined to `runtime/updater.py`
 - keep the client-facing contract centered on the manifest
 
+### Risk: active-process replacement is fragile on Windows
+
+Mitigation:
+
+- avoid PATH-based in-place mutation assumptions
+- use rename-only same-volume swap rules
+- allow helper-process handoff when the active process cannot safely rename the target tree
+
 ### Risk: legacy installs produce confusing UX
 
 Mitigation:
@@ -389,7 +524,9 @@ Mitigation:
 Mitigation:
 
 - require checksum validation
+- require release/manifest identity validation
 - require staging validation
+- require same-volume rename-only swap
 - require rollback after failed post-install verification
 
 ## Rollout Plan
@@ -406,5 +543,6 @@ Mitigation:
 - A Windows user with a prior install can run `ccollab update` from any directory.
 - The updater downloads the latest stable private GitHub release using local `gh` auth.
 - A successful update replaces the install root without requiring a source checkout.
+- The updater selects the correct latest stable release deterministically by semver and rejects mismatched release metadata.
 - A failed update leaves the previous installation intact.
 - `ccollab version` reports meaningful installed-version data, including legacy fallback.
