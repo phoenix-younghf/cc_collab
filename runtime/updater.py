@@ -103,7 +103,7 @@ def _default_release_list_runner(repo: str) -> list[dict[str, Any]]:
             raise ReleaseLookupError("gh release list returned an unexpected paginated payload")
         for item in page:
             if isinstance(item, dict):
-                items.append(item)
+                items.append(_normalize_release_payload(item))
     return items
 
 
@@ -126,6 +126,23 @@ def _run_gh_bytes(args: list[str]) -> bytes:
 def _run_gh_json(args: list[str]) -> Any:
     raw_payload = _run_gh_bytes(args)
     return json.loads(raw_payload.decode("utf-8"))
+
+
+def _normalize_release_payload(item: dict[str, Any]) -> dict[str, Any]:
+    if "tagName" in item:
+        return item
+    normalized = dict(item)
+    if "tag_name" in item:
+        normalized["tagName"] = item.get("tag_name")
+    if "draft" in item:
+        normalized["isDraft"] = item.get("draft")
+    if "prerelease" in item:
+        normalized["isPrerelease"] = item.get("prerelease")
+    if "published_at" in item:
+        normalized["publishedAt"] = item.get("published_at")
+    if "id" in item and "databaseId" not in item:
+        normalized["databaseId"] = item.get("id")
+    return normalized
 
 
 def _resolve_named_asset_id(repo: str, release_id: int, asset_name: str) -> int:

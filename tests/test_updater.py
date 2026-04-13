@@ -30,6 +30,16 @@ def _stable_release_payload(major: int, minor: int, patch_level: int, *, release
     }
 
 
+def _rest_release_payload(major: int, minor: int, patch_level: int, *, release_id: int) -> dict[str, object]:
+    return {
+        "tag_name": f"v{major}.{minor}.{patch_level}",
+        "id": release_id,
+        "published_at": "2026-04-13T12:00:00Z",
+        "draft": False,
+        "prerelease": False,
+    }
+
+
 class FakeGh:
     def __init__(
         self,
@@ -82,8 +92,8 @@ class FakeGh:
 class UpdaterReleaseResolutionTests(TestCase):
     def test_resolve_latest_stable_release_paginates_all_releases_via_gh_api(self) -> None:
         release_pages = [
-            [_stable_release_payload(0, 4, patch_level, release_id=1000 + patch_level) for patch_level in range(100)],
-            [_stable_release_payload(0, 4, patch_level, release_id=1000 + patch_level) for patch_level in range(100, 150)],
+            [_rest_release_payload(0, 4, patch_level, release_id=1000 + patch_level) for patch_level in range(100)],
+            [_rest_release_payload(0, 4, patch_level, release_id=1000 + patch_level) for patch_level in range(100, 150)],
         ]
 
         def fake_run(args: list[str], *, text: bool, capture_output: bool, check: bool) -> subprocess.CompletedProcess[str]:
