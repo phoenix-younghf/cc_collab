@@ -22,6 +22,23 @@ class ClaudeRunnerTests(TestCase):
         self.assertIn("opus", cmd)
         self.assertIn("/tmp/project", cmd)
 
+    @patch(
+        "runtime.claude_runner.resolve_claude_launcher",
+        return_value=r"C:\Users\zengs\AppData\Local\Programs\claude\claude.cmd",
+    )
+    def test_build_command_uses_resolved_windows_launcher(self, _resolve_launcher) -> None:
+        cmd = build_command(
+            workdir="/tmp/project",
+            prompt="Do work",
+            schema_json='{"type":"object"}',
+            runtime_contract="contract",
+            agent_pack_json=None,
+        )
+        self.assertEqual(
+            cmd[0],
+            r"C:\Users\zengs\AppData\Local\Programs\claude\claude.cmd",
+        )
+
     def test_research_agent_pack_contains_required_roles(self) -> None:
         self.assertIn("researcher", RESEARCH_AGENT_PACK)
         self.assertIn("synthesizer", RESEARCH_AGENT_PACK)

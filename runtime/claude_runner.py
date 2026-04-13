@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 
 
@@ -35,6 +36,16 @@ IMPLEMENTATION_AGENT_PACK = {
 }
 
 
+def resolve_claude_launcher() -> str:
+    resolved = shutil.which("claude")
+    if resolved:
+        return resolved
+    resolved = shutil.which("claude.cmd")
+    if resolved:
+        return resolved
+    return "claude"
+
+
 def build_command(
     *,
     workdir: str,
@@ -45,7 +56,7 @@ def build_command(
     model: str | None = None,
 ) -> list[str]:
     cmd = [
-        "claude",
+        resolve_claude_launcher(),
         "-p",
     ]
     if model:

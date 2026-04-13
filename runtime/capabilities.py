@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from runtime.claude_runner import resolve_claude_launcher
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
 
 
@@ -50,12 +51,15 @@ def _default_command_exists(name: str) -> bool:
 
 
 def _default_flag_probe(flag: str) -> bool:
-    help_result = subprocess.run(
-        ["claude", "--help"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    try:
+        help_result = subprocess.run(
+            [resolve_claude_launcher(), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
     help_text = (help_result.stdout or "") + "\n" + (help_result.stderr or "")
     return flag in help_text or (flag == "--print" and "-p" in help_text)
 

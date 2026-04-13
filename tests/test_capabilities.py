@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest import TestCase
+from unittest.mock import patch
 
 from runtime.capabilities import (
     detect_python_capability,
@@ -59,6 +60,21 @@ class CapabilityTests(TestCase):
         self.assertTrue(capability.available)
         self.assertIn("--json-schema", capability.missing_flags)
         self.assertIn("upgrade", capability.remediation.lower())
+
+    @patch("runtime.capabilities.subprocess.run")
+    @patch("runtime.capabilities.shutil.which")
+    def test_detect_claude_capabilities_uses_resolved_windows_launcher(
+        self,
+        mock_which,
+        mock_run,
+    ) -> None:
+        launcher = r"C:\Users\zengs\AppData\Local\Programs\claude\claude.cmd"
+        mock_which.side_effect = lambda name: launcher if name == "claude" else None
+        mock_run.return_value.stdout = " ".join(["-p", *["--output-format", "--json-schema", "--add-dir", "--append-system-prompt", "--agents"]])
+        mock_run.return_value.stderr = ""
+        capability = detect_claude_capabilities()
+        self.assertTrue(capability.available)
+        self.assertEqual(mock_run.call_args.args[0][0], launcher)
 
     def test_detect_git_capabilities_degrades_when_worktree_missing(self) -> None:
         caps = detect_git_capabilities(
