@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-13
 **Project Root:** `/Users/steven/Workspace/cc_collab`
-**Status:** Draft for user review
+**Status:** Approved
 
 ## Goal
 
@@ -421,6 +421,10 @@ Using the shell PATH launcher as the rollback gate is not allowed in v1.
   - add `version`
   - add `update`
 
+- `runtime/constants.py`
+  - add `CCOLLAB_PROJECT_VERSION` as the canonical product version source
+  - add `CCOLLAB_RELEASE_REPOSITORY` as the canonical GitHub repository slug for updater resolution
+
 - installer scripts
   - write `install-metadata.json` during install
   - keep launcher semantics unchanged
@@ -488,6 +492,7 @@ Using the shell PATH launcher as the rollback gate is not allowed in v1.
 ### Packaging Tests
 
 - validate release payload structure
+- validate required payload entries across all three platform archives
 - validate manifest contents
 - validate release ID, tag, and asset identity fields
 - confirm archive names match the client platform mapping
