@@ -14,6 +14,8 @@ _SEMVER_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _AUTH_ERROR_MARKERS = ("gh auth login", "not logged", "authentication failed")
 _REPO_ACCESS_MARKERS = ("http 404", "http 403", "not found", "resource not accessible")
 _DOWNLOAD_REPO_ACCESS_MARKERS = (
+    "http 404",
+    "http 403",
     "repository not found",
     "could not resolve to a repository",
     "resource not accessible by integration",

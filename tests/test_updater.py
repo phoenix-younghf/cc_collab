@@ -205,6 +205,16 @@ class UpdaterReleaseResolutionTests(TestCase):
                 runner=runner.run_download,
             )
 
+    def test_download_release_manifest_reports_http_404_repo_access_denied(self) -> None:
+        runner = FakeGh(stderr="HTTP 404", returncode=1)
+        with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+            download_release_manifest(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_name="ccollab-manifest.json",
+                runner=runner.run_download,
+            )
+
     def test_download_release_manifest_reports_missing_asset_as_download_error(self) -> None:
         runner = FakeGh(stderr="asset not found", returncode=1)
         with self.assertRaisesRegex(DownloadError, "asset not found"):
@@ -250,6 +260,17 @@ class UpdaterReleaseResolutionTests(TestCase):
 
     def test_download_platform_asset_reports_repo_access_denied(self) -> None:
         runner = FakeGh(stderr="repository not found", returncode=1)
+        with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+            download_release_asset(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_id=111,
+                asset_name="ccollab-windows-x64.zip",
+                runner=runner.run_download,
+            )
+
+    def test_download_platform_asset_reports_http_403_repo_access_denied(self) -> None:
+        runner = FakeGh(stderr="HTTP 403", returncode=1)
         with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
             download_release_asset(
                 repo="owner/cc_collab",
