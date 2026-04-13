@@ -1229,86 +1229,85 @@ def _run_windows_helper_transaction(
     staged_root: Path,
     backup_root: Path,
     verification_context: VerificationContext,
+    cleanup_paths: list[Path] | None = None,
     current_version: str | None = None,
     latest_version: str | None = None,
     progress_messages: list[str] | None = None,
     allow_exec: bool = False,
 ) -> UpdateTransactionResult:
-    helper_root = Path(
-        tempfile.mkdtemp(
-            prefix=".ccollab-update-helper-",
-            dir=install_root.parent,
-        )
+    helper_path = install_root.parent / ".ccollab-update-helper.py"
+    result_path = install_root.parent / ".ccollab-update-helper.result.json"
+    if result_path.exists():
+        try:
+            result_path.unlink()
+        except OSError:
+            pass
+    plan = prepare_windows_swap(
+        install_root=install_root,
+        staged_root=staged_root,
+        backup_root=backup_root,
+        helper_executable=helper_path,
+        verification_context=verification_context,
+        result_path=result_path,
     )
-    helper_path = helper_root / "update_execution_helper.py"
-    result_path = helper_root / "transaction-result.json"
-    try:
-        plan = prepare_windows_swap(
+    if not plan.requires_helper:
+        return apply_update_transaction(
             install_root=install_root,
             staged_root=staged_root,
             backup_root=backup_root,
-            helper_executable=helper_path,
             verification_context=verification_context,
-            result_path=result_path,
         )
-        if not plan.requires_helper:
-            return apply_update_transaction(
-                install_root=install_root,
-                staged_root=staged_root,
-                backup_root=backup_root,
-                verification_context=verification_context,
-            )
 
-        shutil.copy2(Path(update_execution.__file__).resolve(), helper_path)
-        os.chdir(plan.working_directory)
-        try:
-            process = subprocess.Popen(
-                list(plan.helper_command or ()),
-                cwd=str(plan.working_directory),
-            )
-        except OSError as exc:
-            return UpdateTransactionResult(
-                ok=False,
-                rollback_performed=False,
-                rollback_succeeded=None,
-                verification=None,
-                error=str(exc),
-            )
-        begin_windows_handoff(install_root, owner_pid=os.getpid(), helper_pid=process.pid)
-        if allow_exec:
-            waiter_messages = list(progress_messages or ())
-            if "Running post-install verification..." not in waiter_messages:
-                waiter_messages.append("Running post-install verification...")
-            waiter_command = [
-                sys.executable,
-                str(helper_path),
-                "--await-result",
-                str(result_path),
-                "--current-version",
-                current_version or "unknown",
-                "--latest-version",
-                latest_version or "unknown",
-                "--update-log-path",
-                str(_update_log_path(install_root)),
-            ]
-            for message in waiter_messages:
-                waiter_command.extend(["--progress-message", message])
-            os.execv(sys.executable, waiter_command)
-        return_code = process.wait()
-        if not result_path.exists():
-            return UpdateTransactionResult(
-                ok=False,
-                rollback_performed=False,
-                rollback_succeeded=None,
-                verification=None,
-                error=(
-                    "Windows helper did not produce a transaction result "
-                    f"(exit code {return_code})."
-                ),
-            )
-        return update_execution.read_transaction_result(result_path)
-    finally:
-        _safe_rmtree(helper_root)
+    shutil.copy2(Path(update_execution.__file__).resolve(), helper_path)
+    os.chdir(plan.working_directory)
+    try:
+        process = subprocess.Popen(
+            list(plan.helper_command or ()),
+            cwd=str(plan.working_directory),
+        )
+    except OSError as exc:
+        return UpdateTransactionResult(
+            ok=False,
+            rollback_performed=False,
+            rollback_succeeded=None,
+            verification=None,
+            error=str(exc),
+        )
+    begin_windows_handoff(install_root, owner_pid=os.getpid(), helper_pid=process.pid)
+    if allow_exec:
+        waiter_messages = list(progress_messages or ())
+        if "Running post-install verification..." not in waiter_messages:
+            waiter_messages.append("Running post-install verification...")
+        waiter_command = [
+            sys.executable,
+            str(helper_path),
+            "--await-result",
+            str(result_path),
+            "--current-version",
+            current_version or "unknown",
+            "--latest-version",
+            latest_version or "unknown",
+            "--update-log-path",
+            str(_update_log_path(install_root)),
+        ]
+        for cleanup_path in [*(cleanup_paths or ()), result_path]:
+            waiter_command.extend(["--cleanup-path", str(cleanup_path)])
+        for message in waiter_messages:
+            waiter_command.extend(["--progress-message", message])
+        os.execv(sys.executable, waiter_command)
+    return_code = process.wait()
+    if not result_path.exists():
+        return UpdateTransactionResult(
+            ok=False,
+            rollback_performed=False,
+            rollback_succeeded=None,
+            verification=None,
+            error=(
+                "Windows helper did not produce a transaction result "
+                f"(exit code {return_code})."
+            ),
+        )
+    return update_execution.read_transaction_result(result_path)
 
 
 def _launcher_path_for_install(install_root: Path, *, os_name: str) -> Path:
@@ -1476,6 +1475,7 @@ def run_update(
                 staged_root=staged_install_root,
                 backup_root=work_area.backup_root,
                 verification_context=verification_context,
+                cleanup_paths=[work_area.staging_root],
                 current_version=plan.current_version,
                 latest_version=plan.latest_version,
                 progress_messages=progress_messages,

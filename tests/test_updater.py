@@ -841,6 +841,27 @@ class UpdaterSwapPlanningTests(TestCase):
 
 
 class UpdaterVerificationTests(TestCase):
+    def test_write_transaction_result_uses_atomic_replace(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "transaction-result.json"
+            with patch("runtime.update_execution.os.replace") as replace_mock:
+                update_execution_module.write_transaction_result(
+                    result_path,
+                    UpdateTransactionResult(
+                        ok=True,
+                        rollback_performed=False,
+                        rollback_succeeded=None,
+                        verification=VerificationResult(
+                            command=("bin/ccollab", "doctor"),
+                            exit_code=0,
+                            stdout="doctor stdout",
+                            stderr="doctor stderr",
+                        ),
+                        error=None,
+                    ),
+                )
+        replace_mock.assert_called_once()
+
     def test_post_install_verification_sets_runtime_root_env_and_timeout(self) -> None:
         with TemporaryDirectory() as tmp:
             install_root = Path(tmp) / "install"
@@ -953,6 +974,40 @@ class UpdaterVerificationTests(TestCase):
             self.assertIn("doctor stdout", log_text)
             self.assertIn("doctor stderr", log_text)
             self.assertIn("Running post-install verification...", log_text)
+
+    def test_await_transaction_result_cleans_requested_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "transaction-result.json"
+            cleanup_root = Path(tmp) / "staging-root"
+            cleanup_root.mkdir()
+            (cleanup_root / "payload.txt").write_text("payload", encoding="utf-8")
+            update_execution_module.write_transaction_result(
+                result_path,
+                UpdateTransactionResult(
+                    ok=True,
+                    rollback_performed=False,
+                    rollback_succeeded=None,
+                    verification=VerificationResult(
+                        command=("bin/ccollab", "doctor"),
+                        exit_code=0,
+                        stdout="doctor stdout",
+                        stderr="doctor stderr",
+                    ),
+                    error=None,
+                ),
+            )
+            with redirect_stdout(io.StringIO()):
+                exit_code = update_execution_module.await_transaction_result(
+                    result_path,
+                    current_version="0.4.1",
+                    latest_version="0.4.2",
+                    progress_messages=["Installing update...", "Running post-install verification..."],
+                    cleanup_paths=[cleanup_root, result_path],
+                    timeout_seconds=1,
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(cleanup_root.exists())
+            self.assertFalse(result_path.exists())
 
 
 class UpdaterRollbackTests(TestCase):
@@ -1122,6 +1177,7 @@ class UpdaterRunTests(TestCase):
             waiter_command = exec_mock.call_args.args[1]
             self.assertIn("--await-result", waiter_command)
             self.assertIn("Running post-install verification...", waiter_command)
+            self.assertIn("--cleanup-path", waiter_command)
             self.assertFalse(str(waiter_command[1]).startswith(str(install_root)))
 
     def test_run_update_validates_resolved_release_identity_before_asset_download(self) -> None:

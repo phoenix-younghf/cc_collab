@@ -132,6 +132,13 @@ def _verification_result_payload(result: VerificationResult | None) -> dict[str,
 
 def write_transaction_result(result_path: Path, result: UpdateTransactionResult) -> None:
     result_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=result_path.name + ".",
+        suffix=".tmp",
+        dir=result_path.parent,
+    )
+    os.close(descriptor)
+    temp_path = Path(temp_name)
     payload = {
         "ok": result.ok,
         "rollback_performed": result.rollback_performed,
@@ -139,7 +146,16 @@ def write_transaction_result(result_path: Path, result: UpdateTransactionResult)
         "verification": _verification_result_payload(result.verification),
         "error": result.error,
     }
-    result_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temp_path, result_path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
 
 
 def read_transaction_result(result_path: Path) -> UpdateTransactionResult:
@@ -430,6 +446,7 @@ def await_transaction_result(
     latest_version: str,
     progress_messages: list[str],
     log_path: Path | None = None,
+    cleanup_paths: list[Path] | None = None,
     timeout_seconds: int = 300,
 ) -> int:
     deadline = time.monotonic() + timeout_seconds
@@ -444,6 +461,16 @@ def await_transaction_result(
                     progress_messages=progress_messages,
                     result=result,
                 )
+            for cleanup_path in cleanup_paths or []:
+                try:
+                    if cleanup_path.is_dir():
+                        shutil.rmtree(cleanup_path, ignore_errors=True)
+                    else:
+                        cleanup_path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    continue
             if result.ok:
                 print(f"Current version: {current_version}")
                 print(f"Latest version: {latest_version}")
@@ -509,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--latest-version")
     parser.add_argument("--progress-message", action="append", default=[])
     parser.add_argument("--update-log-path")
+    parser.add_argument("--cleanup-path", action="append", default=[])
     return parser
 
 
@@ -523,6 +551,7 @@ def main(argv: list[str] | None = None) -> int:
         latest_version=args.latest_version or "unknown",
         progress_messages=list(args.progress_message),
         log_path=Path(args.update_log_path) if args.update_log_path else None,
+        cleanup_paths=[Path(path) for path in args.cleanup_path],
     )
 
 
