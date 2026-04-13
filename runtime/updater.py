@@ -209,6 +209,17 @@ def _translate_release_resolution_error(
     return ReleaseLookupError(f"Unable to resolve releases for {repo}.")
 
 
+def _translate_release_download_error(
+    repo: str,
+    exc: FileNotFoundError | subprocess.CalledProcessError,
+) -> UpdaterError:
+    translated = _translate_release_resolution_error(repo, exc)
+    if isinstance(translated, (GhPrerequisiteError, GhAuthenticationError, RepoAccessError)):
+        return translated
+    detail = _command_text(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
+    return DownloadError(detail or f"Failed to download release asset from {repo}")
+
+
 def _release_id(payload: dict[str, Any]) -> int:
     raw_id = payload.get("databaseId", payload.get("id"))
     if not isinstance(raw_id, int) or isinstance(raw_id, bool) or raw_id < 1:
@@ -260,8 +271,7 @@ def download_release_manifest(
     except (FileNotFoundError, subprocess.CalledProcessError, DownloadError) as exc:
         if isinstance(exc, DownloadError):
             raise
-        message = _command_text(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
-        raise DownloadError(message or f"Failed to download {asset_name} from release {release_id}") from exc
+        raise _translate_release_download_error(repo, exc) from exc
 
     try:
         manifest_payload = json.loads(payload.decode("utf-8-sig"))
@@ -286,8 +296,7 @@ def download_release_asset(
     except (FileNotFoundError, subprocess.CalledProcessError, DownloadError) as exc:
         if isinstance(exc, DownloadError):
             raise
-        message = _command_text(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
-        raise DownloadError(message or f"Failed to download {asset_name} from release {release_id}") from exc
+        raise _translate_release_download_error(repo, exc) from exc
 
 
 def _validate_release_binding(

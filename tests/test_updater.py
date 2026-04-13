@@ -137,9 +137,72 @@ class UpdaterReleaseResolutionTests(TestCase):
                 runner=runner.run_download,
             )
 
+    def test_download_release_manifest_reports_missing_gh(self) -> None:
+        runner = FakeGh(error=FileNotFoundError("gh missing"))
+        with self.assertRaisesRegex(GhPrerequisiteError, "Install GitHub CLI"):
+            download_release_manifest(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_name="ccollab-manifest.json",
+                runner=runner.run_download,
+            )
+
+    def test_download_release_manifest_reports_unauthenticated_gh(self) -> None:
+        runner = FakeGh(stderr="gh auth login required", returncode=1)
+        with self.assertRaisesRegex(GhAuthenticationError, "gh auth login"):
+            download_release_manifest(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_name="ccollab-manifest.json",
+                runner=runner.run_download,
+            )
+
+    def test_download_release_manifest_reports_repo_access_denied(self) -> None:
+        runner = FakeGh(stderr="HTTP 404", returncode=1)
+        with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+            download_release_manifest(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_name="ccollab-manifest.json",
+                runner=runner.run_download,
+            )
+
     def test_download_platform_asset_reports_fetch_failure(self) -> None:
         runner = FakeGh(stderr="asset download failed", returncode=1)
         with self.assertRaisesRegex(DownloadError, "asset download failed"):
+            download_release_asset(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_id=111,
+                asset_name="ccollab-windows-x64.zip",
+                runner=runner.run_download,
+            )
+
+    def test_download_platform_asset_reports_missing_gh(self) -> None:
+        runner = FakeGh(error=FileNotFoundError("gh missing"))
+        with self.assertRaisesRegex(GhPrerequisiteError, "Install GitHub CLI"):
+            download_release_asset(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_id=111,
+                asset_name="ccollab-windows-x64.zip",
+                runner=runner.run_download,
+            )
+
+    def test_download_platform_asset_reports_unauthenticated_gh(self) -> None:
+        runner = FakeGh(stderr="gh auth login required", returncode=1)
+        with self.assertRaisesRegex(GhAuthenticationError, "gh auth login"):
+            download_release_asset(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_id=111,
+                asset_name="ccollab-windows-x64.zip",
+                runner=runner.run_download,
+            )
+
+    def test_download_platform_asset_reports_repo_access_denied(self) -> None:
+        runner = FakeGh(stderr="HTTP 404", returncode=1)
+        with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
             download_release_asset(
                 repo="owner/cc_collab",
                 release_id=123,
@@ -171,6 +234,20 @@ class UpdaterReleaseResolutionTests(TestCase):
                         "asset_id": 111,
                         "size_bytes": 42,
                         "sha256": "abc123",
+                    },
+                    {
+                        "platform": "macos-universal",
+                        "name": "ccollab-macos-universal.tar.gz",
+                        "asset_id": 112,
+                        "size_bytes": 84,
+                        "sha256": "def456",
+                    },
+                    {
+                        "platform": "linux-x64",
+                        "name": "ccollab-linux-x64.tar.gz",
+                        "asset_id": 113,
+                        "size_bytes": 126,
+                        "sha256": "ghi789",
                     }
                 ],
             }
@@ -203,6 +280,20 @@ class UpdaterReleaseResolutionTests(TestCase):
                         "asset_id": 111,
                         "size_bytes": 42,
                         "sha256": "abc123",
+                    },
+                    {
+                        "platform": "macos-universal",
+                        "name": "ccollab-macos-universal.tar.gz",
+                        "asset_id": 112,
+                        "size_bytes": 84,
+                        "sha256": "def456",
+                    },
+                    {
+                        "platform": "linux-x64",
+                        "name": "ccollab-linux-x64.tar.gz",
+                        "asset_id": 113,
+                        "size_bytes": 126,
+                        "sha256": "ghi789",
                     }
                 ],
             }

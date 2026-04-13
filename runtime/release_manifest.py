@@ -6,6 +6,11 @@ from typing import Any
 
 
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+_SUPPORTED_STABLE_PLATFORMS = (
+    "windows-x64",
+    "macos-universal",
+    "linux-x64",
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,8 @@ def parse_release_manifest(payload: dict[str, Any]) -> ReleaseManifest:
         raise ValueError("manifest.version must be a semantic version")
 
     channel = _require_string(payload, "channel", context="manifest")
+    if channel != "stable":
+        raise ValueError("manifest.channel must be 'stable'")
     repo = _require_string(payload, "repo", context="manifest")
     tag = _require_string(payload, "tag", context="manifest")
     expected_tag = f"v{version}"
@@ -147,14 +154,24 @@ def parse_release_manifest(payload: dict[str, Any]) -> ReleaseManifest:
                 item,
                 "size_bytes",
                 context=f"manifest.assets[{index}]",
-                minimum=0,
+                minimum=1,
             ),
             sha256=_require_string(item, "sha256", context=f"manifest.assets[{index}]"),
         )
+        if asset.platform not in _SUPPORTED_STABLE_PLATFORMS:
+            raise ValueError(f"manifest.assets[{index}] uses unsupported platform {asset.platform!r}")
         if asset.platform in seen_platforms:
             raise ValueError(f"manifest.assets contains duplicate platform {asset.platform!r}")
         seen_platforms.add(asset.platform)
         assets.append(asset)
+
+    missing_platforms = [platform for platform in _SUPPORTED_STABLE_PLATFORMS if platform not in seen_platforms]
+    if missing_platforms:
+        raise ValueError(
+            "manifest.assets must include stable assets for: " + ", ".join(missing_platforms)
+        )
+    if len(assets) != len(_SUPPORTED_STABLE_PLATFORMS):
+        raise ValueError("manifest.assets must contain exactly the supported stable platform assets")
 
     return ReleaseManifest(
         version=version,
