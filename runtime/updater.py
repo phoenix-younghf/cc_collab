@@ -1135,6 +1135,8 @@ def prepare_windows_swap(
     staged_root: Path,
     backup_root: Path,
     helper_executable: Path,
+    verification_context: VerificationContext | None = None,
+    result_path: Path | None = None,
 ) -> WindowsSwapPlan:
     return update_execution.prepare_windows_swap(
         install_root=install_root,
@@ -1142,6 +1144,8 @@ def prepare_windows_swap(
         backup_root=backup_root,
         helper_executable=helper_executable,
         current_workdir=current_working_directory(),
+        verification_context=verification_context,
+        result_path=result_path,
     )
 
 
@@ -1178,6 +1182,109 @@ def apply_update_transaction(
         verification_context=verification_context,
         verification_runner=runner,
     )
+
+
+def _update_log_path(install_root: Path) -> Path:
+    return install_root.parent / ".ccollab-update.log"
+
+
+def _append_update_log(
+    *,
+    install_root: Path,
+    current_version: str,
+    latest_version: str,
+    progress_messages: list[str],
+    transaction: UpdateTransactionResult,
+) -> None:
+    log_path = _update_log_path(install_root)
+    lines = [
+        f"[{_timestamp_utc()}] ccollab update",
+        f"Current version: {current_version}",
+        f"Latest version: {latest_version}",
+    ]
+    lines.extend(progress_messages)
+    if transaction.verification is not None:
+        command_text = " ".join(transaction.verification.command)
+        lines.extend(
+            [
+                f"Verification command: {command_text}",
+                f"Verification exit code: {transaction.verification.exit_code}",
+                "Verification stdout:",
+                transaction.verification.stdout,
+                "Verification stderr:",
+                transaction.verification.stderr,
+            ]
+        )
+    if transaction.error:
+        lines.append(f"Update error: {transaction.error}")
+    if transaction.rollback_performed:
+        lines.append(f"Rollback succeeded: {transaction.rollback_succeeded}")
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _run_windows_helper_transaction(
+    *,
+    install_root: Path,
+    staged_root: Path,
+    backup_root: Path,
+    verification_context: VerificationContext,
+) -> UpdateTransactionResult:
+    helper_root = Path(
+        tempfile.mkdtemp(
+            prefix=".ccollab-update-helper-",
+            dir=install_root.parent,
+        )
+    )
+    helper_path = helper_root / "update_execution_helper.py"
+    result_path = helper_root / "transaction-result.json"
+    try:
+        plan = prepare_windows_swap(
+            install_root=install_root,
+            staged_root=staged_root,
+            backup_root=backup_root,
+            helper_executable=helper_path,
+            verification_context=verification_context,
+            result_path=result_path,
+        )
+        if not plan.requires_helper:
+            return apply_update_transaction(
+                install_root=install_root,
+                staged_root=staged_root,
+                backup_root=backup_root,
+                verification_context=verification_context,
+            )
+
+        shutil.copy2(Path(update_execution.__file__).resolve(), helper_path)
+        os.chdir(plan.working_directory)
+        try:
+            process = subprocess.Popen(
+                list(plan.helper_command or ()),
+                cwd=str(plan.working_directory),
+            )
+        except OSError as exc:
+            return UpdateTransactionResult(
+                ok=False,
+                rollback_performed=False,
+                rollback_succeeded=None,
+                verification=None,
+                error=str(exc),
+            )
+        begin_windows_handoff(install_root, owner_pid=os.getpid(), helper_pid=process.pid)
+        return_code = process.wait()
+        if not result_path.exists():
+            return UpdateTransactionResult(
+                ok=False,
+                rollback_performed=False,
+                rollback_succeeded=None,
+                verification=None,
+                error=(
+                    "Windows helper did not produce a transaction result "
+                    f"(exit code {return_code})."
+                ),
+            )
+        return update_execution.read_transaction_result(result_path)
+    finally:
+        _safe_rmtree(helper_root)
 
 
 def _launcher_path_for_install(install_root: Path, *, os_name: str) -> Path:
@@ -1340,20 +1447,27 @@ def run_update(
         )
         progress_messages.append("Installing update...")
         if runtime_os == "nt":
-            # Persist swap intent whenever the updater is launched from an unsafe directory.
-            prepare_windows_swap(
+            transaction = _run_windows_helper_transaction(
                 install_root=install_root,
                 staged_root=staged_install_root,
                 backup_root=work_area.backup_root,
-                helper_executable=install_root / "runtime" / "update_execution.py",
+                verification_context=verification_context,
             )
-        transaction = apply_update_transaction(
-            install_root=install_root,
-            staged_root=staged_install_root,
-            backup_root=work_area.backup_root,
-            verification_context=verification_context,
-        )
+        else:
+            transaction = apply_update_transaction(
+                install_root=install_root,
+                staged_root=staged_install_root,
+                backup_root=work_area.backup_root,
+                verification_context=verification_context,
+            )
         progress_messages.append("Running post-install verification...")
+        _append_update_log(
+            install_root=install_root,
+            current_version=plan.current_version,
+            latest_version=plan.latest_version,
+            progress_messages=progress_messages,
+            transaction=transaction,
+        )
         if not transaction.ok:
             detail = transaction.error or "post-install verification failed"
             if transaction.rollback_performed and transaction.rollback_succeeded:

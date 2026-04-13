@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+import runtime.updater as updater_module
 from runtime.capabilities import ClaudeCapability, PythonCapability
 from runtime.release_manifest import parse_release_manifest
 from runtime.versioning import InstallDiscovery
@@ -25,6 +26,7 @@ from runtime.updater import (
     RepoAccessError,
     ResolvedGitHubRelease,
     UpdateExecutionError,
+    UpdateTransactionResult,
     UpdateLockedError,
     VerificationContext,
     VerificationError,
@@ -892,6 +894,26 @@ class UpdaterVerificationTests(TestCase):
                         verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
                     )
 
+    def test_failed_verification_preserves_stdout_and_stderr_for_logging(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "install"
+            install_root.mkdir(parents=True)
+            completed = subprocess.CompletedProcess(
+                args=["cmd", "/c", "dummy"],
+                returncode=2,
+                stdout="doctor stdout",
+                stderr="doctor stderr",
+            )
+            with patch("runtime.update_execution.subprocess.run", return_value=completed):
+                with self.assertRaises(VerificationError) as exc_info:
+                    run_post_install_verification(
+                        install_root=install_root,
+                        verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
+                    )
+        self.assertIsNotNone(exc_info.exception.result)
+        self.assertEqual(exc_info.exception.result.stdout, "doctor stdout")
+        self.assertEqual(exc_info.exception.result.stderr, "doctor stderr")
+
 
 class UpdaterRollbackTests(TestCase):
     def test_verification_failure_restores_backup(self) -> None:
@@ -937,8 +959,99 @@ class UpdaterRollbackTests(TestCase):
         self.assertEqual(plan.latest_version, "0.4.2")
         self.assertFalse(plan.already_up_to_date)
 
+    def test_failed_second_rename_restores_backup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = _seed_staged_payload(root)
+            backup_root = root / "install-backup"
+            real_replace = updater_module.update_execution.os.replace
+
+            def flaky_replace(src: str | bytes | Path, dst: str | bytes | Path) -> None:
+                source = Path(src)
+                destination = Path(dst)
+                if source == staged_root and destination == install_root:
+                    raise OSError("second rename failed")
+                real_replace(src, dst)
+
+            with patch("runtime.update_execution.os.replace", side_effect=flaky_replace):
+                result = apply_update_transaction(
+                    install_root=install_root,
+                    staged_root=staged_root,
+                    backup_root=backup_root,
+                    verification_context=VerificationContext(os_name="posix", timeout_seconds=45),
+                )
+
+            self.assertFalse(result.ok)
+            self.assertTrue(result.rollback_performed)
+            self.assertTrue(result.rollback_succeeded)
+            self.assertEqual(
+                (install_root / "runtime" / "version.txt").read_text(encoding="utf-8"),
+                "0.4.1",
+            )
+            self.assertFalse(backup_root.exists())
+
 
 class UpdaterRunTests(TestCase):
+    def test_windows_helper_transaction_uses_external_helper_and_handoff(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = _seed_staged_payload(root)
+            backup_root = root / "install-backup"
+            spawned: dict[str, object] = {}
+
+            class FakeProcess:
+                pid = 456
+
+                def wait(self) -> int:
+                    return 0
+
+            def fake_popen(args: list[str], **kwargs: object) -> FakeProcess:
+                spawned["args"] = args
+                spawned["kwargs"] = kwargs
+                intent_path = Path(args[-1])
+                payload = json.loads(intent_path.read_text(encoding="utf-8"))
+                result_path = Path(payload["result_path"])
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "rollback_performed": False,
+                            "rollback_succeeded": None,
+                            "verification": {
+                                "command": ["cmd", "/c", "ccollab.cmd", "doctor"],
+                                "exit_code": 0,
+                                "stdout": "doctor ok",
+                                "stderr": "doctor warn",
+                            },
+                            "error": None,
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                return FakeProcess()
+
+            with patch("runtime.updater.current_working_directory", return_value=install_root / "runtime"):
+                with patch("runtime.updater.begin_windows_handoff") as handoff_mock:
+                    with patch("runtime.updater.subprocess.Popen", side_effect=fake_popen):
+                        result = updater_module._run_windows_helper_transaction(
+                            install_root=install_root,
+                            staged_root=staged_root,
+                            backup_root=backup_root,
+                            verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
+                        )
+
+            helper_command = spawned["args"]
+            helper_path = Path(helper_command[1])
+            self.assertTrue(result.ok)
+            self.assertFalse(str(helper_path).startswith(str(install_root)))
+            self.assertFalse(str(spawned["kwargs"]["cwd"]).startswith(str(install_root)))
+            self.assertFalse(str(spawned["kwargs"]["cwd"]).startswith(str(staged_root)))
+            self.assertFalse(str(spawned["kwargs"]["cwd"]).startswith(str(backup_root)))
+            handoff_mock.assert_called_once_with(install_root, owner_pid=updater_module.os.getpid(), helper_pid=456)
+
     def test_run_update_validates_resolved_release_identity_before_asset_download(self) -> None:
         with TemporaryDirectory() as tmp:
             install_root = _seed_install_root(Path(tmp), version="0.4.1")
@@ -1006,3 +1119,112 @@ class UpdaterRunTests(TestCase):
                                         with self.assertRaises(UpdateExecutionError):
                                             run_update(env={}, os_name="posix")
             stage_asset_mock.assert_not_called()
+
+    def test_run_update_writes_verification_output_to_update_log(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            discovery = InstallDiscovery(
+                install_root=install_root,
+                status="installed",
+                metadata=None,
+                version="0.4.1",
+                channel="stable",
+                repo="owner/cc_collab",
+            )
+            release = ResolvedGitHubRelease(
+                repo="owner/cc_collab",
+                tag="v0.4.2",
+                release_id=123,
+                published_at="2026-04-13T12:00:00Z",
+            )
+            manifest_payload = {
+                "version": "0.4.2",
+                "channel": "stable",
+                "repo": "owner/cc_collab",
+                "tag": "v0.4.2",
+                "release_id": 123,
+                "published_at": "2026-04-13T12:00:00Z",
+                "compatibility": {"python_min": "3.9", "claude_required_flags": ["--print"]},
+                "assets": [
+                    {
+                        "platform": "windows-x64",
+                        "name": "ccollab-windows-x64.zip",
+                        "asset_id": 111,
+                        "size_bytes": 42,
+                        "sha256": "abc123",
+                    },
+                    {
+                        "platform": "macos-universal",
+                        "name": "ccollab-macos-universal.tar.gz",
+                        "asset_id": 112,
+                        "size_bytes": 84,
+                        "sha256": "def456",
+                    },
+                    {
+                        "platform": "linux-x64",
+                        "name": "ccollab-linux-x64.tar.gz",
+                        "asset_id": 113,
+                        "size_bytes": 126,
+                        "sha256": "ghi789",
+                    },
+                ],
+            }
+            work_area = updater_module.UpdateWorkArea(
+                staging_root=root / "staging-root",
+                backup_root=root / "install-backup",
+            )
+            work_area.staging_root.mkdir()
+            work_area.backup_root.mkdir()
+            archive_path = work_area.staging_root / "payload.tar.gz"
+            archive_path.write_bytes(b"payload")
+            fake_lock = type(
+                "FakeLock",
+                (),
+                {"release": lambda self: None},
+            )()
+            transaction = UpdateTransactionResult(
+                ok=True,
+                rollback_performed=False,
+                rollback_succeeded=None,
+                verification=VerificationResult(
+                    command=("bin/ccollab", "doctor"),
+                    exit_code=0,
+                    stdout="doctor stdout",
+                    stderr="doctor stderr",
+                ),
+                error=None,
+            )
+
+            def seed_extract(_archive_path: Path, extracted_root: Path) -> None:
+                extracted_root.mkdir(parents=True, exist_ok=True)
+                for directory in ("bin", "runtime", "skill", "install", "examples"):
+                    (extracted_root / directory).mkdir(exist_ok=True)
+                (extracted_root / "README.md").write_text("# ccollab\n", encoding="utf-8")
+                (extracted_root / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
+
+            with patch("runtime.updater.get_active_runtime_root", return_value=install_root):
+                with patch("runtime.updater.discover_install_root", return_value=discovery):
+                    with patch("runtime.updater.ensure_healthy_launcher"):
+                        with patch("runtime.updater.acquire_update_lock", return_value=fake_lock):
+                            with patch("runtime.updater.resolve_latest_stable_release", return_value=release):
+                                with patch(
+                                    "runtime.updater.download_release_manifest",
+                                    return_value=manifest_payload,
+                                ):
+                                    with patch("runtime.updater.run_compatibility_preflight"):
+                                        with patch("runtime.updater.create_update_work_area", return_value=work_area):
+                                            with patch("runtime.updater.resolve_platform_identifier", return_value="linux-x64"):
+                                                with patch("runtime.updater.stage_release_asset", return_value=archive_path):
+                                                    with patch("runtime.updater.verify_downloaded_archive"):
+                                                        with patch("runtime.updater.extract_release_archive", side_effect=seed_extract):
+                                                            with patch("runtime.updater.apply_update_transaction", return_value=transaction):
+                                                                result = run_update(env={}, os_name="posix")
+
+            self.assertEqual(result.verification_stdout, "doctor stdout")
+            log_path = install_root.parent / ".ccollab-update.log"
+            self.assertTrue(log_path.exists())
+            log_text = log_path.read_text(encoding="utf-8")
+            self.assertIn("doctor stdout", log_text)
+            self.assertIn("doctor stderr", log_text)
+            self.assertIn("Running post-install verification...", log_text)
