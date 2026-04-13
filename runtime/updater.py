@@ -539,17 +539,34 @@ def stage_release_asset(
 
 
 def extract_release_archive(archive_path: Path, stage_root: Path) -> None:
+    def _validate_member_path(base_root: Path, member_name: str) -> None:
+        normalized = member_name.replace("\\", "/")
+        if normalized.startswith("/") or (len(normalized) >= 2 and normalized[1] == ":"):
+            raise InvalidArchiveError(f"Archive member path escapes stage root: {member_name!r}")
+        destination = (base_root / normalized).resolve()
+        try:
+            destination.relative_to(base_root)
+        except ValueError as exc:
+            raise InvalidArchiveError(
+                f"Archive member path escapes stage root: {member_name!r}"
+            ) from exc
+
     try:
         if stage_root.exists():
             shutil.rmtree(stage_root)
         stage_root.mkdir(parents=True, exist_ok=True)
+        resolved_stage_root = stage_root.resolve()
         suffixes = tuple(archive_path.suffixes)
         if archive_path.suffix == ".zip":
             with zipfile.ZipFile(archive_path) as archive:
+                for member_name in archive.namelist():
+                    _validate_member_path(resolved_stage_root, member_name)
                 archive.extractall(stage_root)
             return
         if suffixes[-2:] in {(".tar", ".gz")} or suffixes[-1:] in {(".tgz",)}:
             with tarfile.open(archive_path, mode="r:gz") as archive:
+                for member in archive.getmembers():
+                    _validate_member_path(resolved_stage_root, member.name)
                 archive.extractall(stage_root)
             return
         raise InvalidArchiveError(f"Unsupported archive format: {archive_path.name}")

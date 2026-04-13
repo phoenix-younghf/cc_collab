@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
+import tarfile
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -595,6 +598,39 @@ class UpdaterTransactionTests(TestCase):
             before = _snapshot_tree(install_root)
             with self.assertRaises(InvalidArchiveError):
                 extract_release_archive(broken_archive, stage_root)
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_zip_traversal_archive_is_rejected_without_outside_write(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root)
+            traversal_archive = root / "traversal.zip"
+            with zipfile.ZipFile(traversal_archive, mode="w") as archive:
+                archive.writestr("../escaped.txt", "escape-attempt")
+            stage_root = root / "staged"
+            outside_path = root / "escaped.txt"
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidArchiveError):
+                extract_release_archive(traversal_archive, stage_root)
+            self.assertFalse(outside_path.exists())
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_tar_traversal_archive_is_rejected_without_outside_write(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root)
+            traversal_archive = root / "traversal.tar.gz"
+            payload = b"escape-attempt"
+            with tarfile.open(traversal_archive, mode="w:gz") as archive:
+                member = tarfile.TarInfo(name="../escaped-tar.txt")
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+            stage_root = root / "staged"
+            outside_path = root / "escaped-tar.txt"
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidArchiveError):
+                extract_release_archive(traversal_archive, stage_root)
+            self.assertFalse(outside_path.exists())
             self.assertEqual(_snapshot_tree(install_root), before)
 
     def test_acquire_update_lock_records_owner_metadata(self) -> None:
