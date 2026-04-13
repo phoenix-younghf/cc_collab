@@ -1276,6 +1276,9 @@ def _run_windows_helper_transaction(
             )
         begin_windows_handoff(install_root, owner_pid=os.getpid(), helper_pid=process.pid)
         if allow_exec:
+            waiter_messages = list(progress_messages or ())
+            if "Running post-install verification..." not in waiter_messages:
+                waiter_messages.append("Running post-install verification...")
             waiter_command = [
                 sys.executable,
                 str(helper_path),
@@ -1285,8 +1288,10 @@ def _run_windows_helper_transaction(
                 current_version or "unknown",
                 "--latest-version",
                 latest_version or "unknown",
+                "--update-log-path",
+                str(_update_log_path(install_root)),
             ]
-            for message in progress_messages or []:
+            for message in waiter_messages:
                 waiter_command.extend(["--progress-message", message])
             os.execv(sys.executable, waiter_command)
         return_code = process.wait()

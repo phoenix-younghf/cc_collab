@@ -368,6 +368,39 @@ def _cleanup_helper_paths(install_root: Path, *, intent_path: Path) -> None:
             continue
 
 
+def _write_update_log(
+    log_path: Path,
+    *,
+    current_version: str,
+    latest_version: str,
+    progress_messages: list[str],
+    result: UpdateTransactionResult,
+) -> None:
+    lines = [
+        f"[{_timestamp_utc()}] ccollab update",
+        f"Current version: {current_version}",
+        f"Latest version: {latest_version}",
+    ]
+    lines.extend(progress_messages)
+    if result.verification is not None:
+        command_text = " ".join(result.verification.command)
+        lines.extend(
+            [
+                f"Verification command: {command_text}",
+                f"Verification exit code: {result.verification.exit_code}",
+                "Verification stdout:",
+                result.verification.stdout,
+                "Verification stderr:",
+                result.verification.stderr,
+            ]
+        )
+    if result.error:
+        lines.append(f"Update error: {result.error}")
+    if result.rollback_performed:
+        lines.append(f"Rollback succeeded: {result.rollback_succeeded}")
+    log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _handoff_ready(install_root: Path, *, helper_pid: int) -> bool:
     handoff_path = _handoff_record_path(install_root)
     if not handoff_path.exists():
@@ -396,12 +429,21 @@ def await_transaction_result(
     current_version: str,
     latest_version: str,
     progress_messages: list[str],
+    log_path: Path | None = None,
     timeout_seconds: int = 300,
 ) -> int:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if result_path.exists():
             result = read_transaction_result(result_path)
+            if log_path is not None:
+                _write_update_log(
+                    log_path,
+                    current_version=current_version,
+                    latest_version=latest_version,
+                    progress_messages=progress_messages,
+                    result=result,
+                )
             if result.ok:
                 print(f"Current version: {current_version}")
                 print(f"Latest version: {latest_version}")
@@ -466,6 +508,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--current-version")
     parser.add_argument("--latest-version")
     parser.add_argument("--progress-message", action="append", default=[])
+    parser.add_argument("--update-log-path")
     return parser
 
 
@@ -479,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
         current_version=args.current_version or "unknown",
         latest_version=args.latest_version or "unknown",
         progress_messages=list(args.progress_message),
+        log_path=Path(args.update_log_path) if args.update_log_path else None,
     )
 
 

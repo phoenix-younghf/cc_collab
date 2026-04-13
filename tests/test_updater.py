@@ -5,11 +5,13 @@ import json
 import subprocess
 import tarfile
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+import runtime.update_execution as update_execution_module
 import runtime.updater as updater_module
 from runtime.capabilities import ClaudeCapability, PythonCapability
 from runtime.release_manifest import parse_release_manifest
@@ -914,6 +916,44 @@ class UpdaterVerificationTests(TestCase):
         self.assertEqual(exc_info.exception.result.stdout, "doctor stdout")
         self.assertEqual(exc_info.exception.result.stderr, "doctor stderr")
 
+    def test_await_transaction_result_writes_update_log(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result_path = Path(tmp) / "transaction-result.json"
+            log_path = Path(tmp) / ".ccollab-update.log"
+            update_execution_module.write_transaction_result(
+                result_path,
+                UpdateTransactionResult(
+                    ok=True,
+                    rollback_performed=False,
+                    rollback_succeeded=None,
+                    verification=VerificationResult(
+                        command=("bin/ccollab", "doctor"),
+                        exit_code=0,
+                        stdout="doctor stdout",
+                        stderr="doctor stderr",
+                    ),
+                    error=None,
+                ),
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = update_execution_module.await_transaction_result(
+                    result_path,
+                    current_version="0.4.1",
+                    latest_version="0.4.2",
+                    progress_messages=[
+                        "Installing update...",
+                        "Running post-install verification...",
+                    ],
+                    log_path=log_path,
+                    timeout_seconds=1,
+                )
+            self.assertEqual(exit_code, 0)
+            log_text = log_path.read_text(encoding="utf-8")
+            self.assertIn("doctor stdout", log_text)
+            self.assertIn("doctor stderr", log_text)
+            self.assertIn("Running post-install verification...", log_text)
+
 
 class UpdaterRollbackTests(TestCase):
     def test_verification_failure_restores_backup(self) -> None:
@@ -1081,6 +1121,7 @@ class UpdaterRunTests(TestCase):
             handoff_mock.assert_called_once_with(install_root, owner_pid=updater_module.os.getpid(), helper_pid=789)
             waiter_command = exec_mock.call_args.args[1]
             self.assertIn("--await-result", waiter_command)
+            self.assertIn("Running post-install verification...", waiter_command)
             self.assertFalse(str(waiter_command[1]).startswith(str(install_root)))
 
     def test_run_update_validates_resolved_release_identity_before_asset_download(self) -> None:
