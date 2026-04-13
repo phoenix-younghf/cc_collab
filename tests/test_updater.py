@@ -531,6 +531,16 @@ def _make_manifest(
     )
 
 
+def _seed_staged_payload(root: Path) -> Path:
+    staged_root = root / "staged-install"
+    staged_root.mkdir(parents=True, exist_ok=True)
+    for directory in ("bin", "runtime", "skill", "install", "examples"):
+        (staged_root / directory).mkdir()
+    (staged_root / "README.md").write_text("# ccollab\n", encoding="utf-8")
+    (staged_root / "AGENTS.md").write_text("# agents\n", encoding="utf-8")
+    return staged_root
+
+
 class UpdaterTransactionTests(TestCase):
     def test_create_update_work_area_rejects_cross_volume_swap(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -644,6 +654,26 @@ class UpdaterTransactionTests(TestCase):
             self.assertIsNotNone(record.acquired_at)
             lock.release()
 
+    def test_recover_or_acquire_lock_refuses_missing_record_without_stale_proof(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock_path = install_root.parent / ".ccollab-update.lock"
+            lock_path.write_text("123\n", encoding="utf-8")
+            with self.assertRaises(UpdateLockedError):
+                recover_or_acquire_lock(install_root, current_pid=999)
+            self.assertTrue(lock_path.exists())
+
+    def test_recover_or_acquire_lock_refuses_unreadable_record_without_stale_proof(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock_path = install_root.parent / ".ccollab-update.lock"
+            record_path = install_root.parent / ".ccollab-update.lock.json"
+            lock_path.write_text("123\n", encoding="utf-8")
+            record_path.write_text("{not-json", encoding="utf-8")
+            with self.assertRaises(UpdateLockedError):
+                recover_or_acquire_lock(install_root, current_pid=999)
+            self.assertTrue(lock_path.exists())
+
 
 class UpdaterCompatibilityTests(TestCase):
     def test_old_python_rejected(self) -> None:
@@ -678,6 +708,28 @@ class UpdaterPayloadValidationTests(TestCase):
             staged_root = root / "staged-install"
             staged_root.mkdir()
             (staged_root / "bin").mkdir()
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidPayloadError):
+                validate_staged_payload(staged_root)
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_missing_skill_directory_rejects_staged_payload_before_swap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = _seed_staged_payload(root)
+            (staged_root / "skill").rmdir()
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidPayloadError):
+                validate_staged_payload(staged_root)
+            self.assertEqual(_snapshot_tree(install_root), before)
+
+    def test_missing_readme_rejects_staged_payload_before_swap(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = _seed_staged_payload(root)
+            (staged_root / "README.md").unlink()
             before = _snapshot_tree(install_root)
             with self.assertRaises(InvalidPayloadError):
                 validate_staged_payload(staged_root)

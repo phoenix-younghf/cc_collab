@@ -359,7 +359,12 @@ def recover_or_acquire_lock(
                     f"Update lock for {canonical_install_root} is currently owned by a helper handoff."
                 )
             record = _read_lock_record(record_path)
-            if record is not None and _pid_is_alive(record.pid):
+            if record is None:
+                raise UpdateLockedError(
+                    f"Update lock for {canonical_install_root} has no readable owner metadata; "
+                    "cannot prove the existing owner is stale."
+                )
+            if _pid_is_alive(record.pid):
                 raise UpdateLockedError(
                     f"Another updater instance is active for {canonical_install_root} "
                     f"(pid={record.pid}, host={record.hostname})."
@@ -677,14 +682,18 @@ def write_staged_install_metadata(
 
 
 def validate_staged_payload(staged_install_root: Path) -> None:
-    missing_required_paths = [
-        required_name
-        for required_name in ("runtime", "bin")
-        if not (staged_install_root / required_name).is_dir()
-    ]
+    required_directories = ("bin", "runtime", "skill", "install", "examples")
+    required_files = ("README.md", "AGENTS.md")
+    missing_required_paths: list[str] = []
+    for required_name in required_directories:
+        if not (staged_install_root / required_name).is_dir():
+            missing_required_paths.append(required_name)
+    for required_name in required_files:
+        if not (staged_install_root / required_name).is_file():
+            missing_required_paths.append(required_name)
     if missing_required_paths:
         raise InvalidPayloadError(
-            "Staged payload is missing required directories: "
+            "Staged payload is missing required entries: "
             + ", ".join(missing_required_paths)
         )
     if not is_valid_install_payload(staged_install_root):
