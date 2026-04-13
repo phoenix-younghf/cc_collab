@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase
 from unittest.mock import patch
 
+from runtime.constants import CCOLLAB_PROJECT_VERSION
 from runtime.versioning import (
     InvalidInstallMetadataError,
     InstallMetadata,
@@ -74,7 +75,7 @@ class VersioningTests(TestCase):
             self.assertEqual(
                 metadata,
                 InstallMetadata(
-                    version="0.4.2",
+                    version=CCOLLAB_PROJECT_VERSION,
                     channel="stable",
                     repo="owner/cc_collab",
                     platform="linux-x64",
@@ -97,7 +98,7 @@ class VersioningTests(TestCase):
             self.assertEqual(
                 read_install_metadata(root),
                 InstallMetadata(
-                    version="0.4.2",
+                    version=CCOLLAB_PROJECT_VERSION,
                     channel="stable",
                     repo="owner/cc_collab",
                     platform="linux-x64",
