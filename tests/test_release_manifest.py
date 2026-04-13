@@ -154,6 +154,43 @@ class ReleaseManifestTests(TestCase):
                 }
             )
 
+    def test_parse_manifest_rejects_wrong_stable_asset_filename(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ccollab-macos-universal.tar.gz"):
+            parse_release_manifest(
+                {
+                    "version": "0.4.2",
+                    "channel": "stable",
+                    "repo": "owner/cc_collab",
+                    "tag": "v0.4.2",
+                    "release_id": 123,
+                    "published_at": "2026-04-13T12:00:00Z",
+                    "compatibility": {"python_min": "3.9", "claude_required_flags": ["--print"]},
+                    "assets": [
+                        {
+                            "platform": "windows-x64",
+                            "name": "ccollab-windows-x64.zip",
+                            "asset_id": 111,
+                            "size_bytes": 42,
+                            "sha256": "abc123",
+                        },
+                        {
+                            "platform": "macos-universal",
+                            "name": "wrong-macos-name.tar.gz",
+                            "asset_id": 112,
+                            "size_bytes": 84,
+                            "sha256": "def456",
+                        },
+                        {
+                            "platform": "linux-x64",
+                            "name": "ccollab-linux-x64.tar.gz",
+                            "asset_id": 113,
+                            "size_bytes": 126,
+                            "sha256": "ghi789",
+                        },
+                    ],
+                }
+            )
+
     def test_parse_manifest_rejects_missing_asset_id(self) -> None:
         with self.assertRaises(ValueError):
             parse_release_manifest(

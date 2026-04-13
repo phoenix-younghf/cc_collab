@@ -11,6 +11,11 @@ _SUPPORTED_STABLE_PLATFORMS = (
     "macos-universal",
     "linux-x64",
 )
+_STABLE_ASSET_NAME_BY_PLATFORM = {
+    "windows-x64": "ccollab-windows-x64.zip",
+    "macos-universal": "ccollab-macos-universal.tar.gz",
+    "linux-x64": "ccollab-linux-x64.tar.gz",
+}
 
 
 @dataclass(frozen=True)
@@ -160,6 +165,11 @@ def parse_release_manifest(payload: dict[str, Any]) -> ReleaseManifest:
         )
         if asset.platform not in _SUPPORTED_STABLE_PLATFORMS:
             raise ValueError(f"manifest.assets[{index}] uses unsupported platform {asset.platform!r}")
+        expected_name = _STABLE_ASSET_NAME_BY_PLATFORM[asset.platform]
+        if asset.name != expected_name:
+            raise ValueError(
+                f"manifest.assets[{index}].name for {asset.platform!r} must be {expected_name!r}"
+            )
         if asset.platform in seen_platforms:
             raise ValueError(f"manifest.assets contains duplicate platform {asset.platform!r}")
         seen_platforms.add(asset.platform)
