@@ -9,7 +9,11 @@
   "context_summary": "Installed-launcher smoke task for non-Git execution.",
   "inputs": {
     "files": [],
-    "constraints": [],
+    "constraints": [
+      "Do not inspect the workspace.",
+      "Do not use tools.",
+      "Return the minimal valid structured result immediately."
+    ],
     "acceptance_criteria": ["Persist a task result artifact"],
     "verification_commands": [],
     "closeout": {"on_success": "archived", "on_failure": "inspection-required"}

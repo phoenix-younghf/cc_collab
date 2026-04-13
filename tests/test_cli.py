@@ -19,7 +19,7 @@ from runtime.capabilities import (
     PythonCapability,
     RuntimeCapabilities,
 )
-from runtime.cli import main
+from runtime.cli import _repair_source_output, main
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
 from runtime.updater import (
     BrokenLauncherError,
@@ -631,6 +631,23 @@ class CliUpdateTests(TestCase):
 
 
 class CliIntegrationTests(TestCase):
+    def test_repair_source_output_prefers_partial_parsed_dict_over_raw_envelope(self) -> None:
+        parsed_output = {
+            "task_id": "task-2d",
+            "status": "completed",
+            "summary": "ok",
+            "result": {
+                "task_id": "task-2d",
+                "status": "completed",
+                "summary": "ok",
+            },
+        }
+        raw_output = '{"type":"result","subtype":"success","result":"noisy envelope"}'
+
+        repair_source = _repair_source_output(parsed_output, raw_output)
+
+        self.assertEqual(json.loads(repair_source), parsed_output)
+
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1"), ""))
     @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
     @patch("runtime.cli.capture_git_status", return_value="")

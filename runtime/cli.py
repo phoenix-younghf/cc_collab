@@ -127,6 +127,8 @@ def _repair_source_output(parsed_output: dict, raw_output: str) -> str:
     nested = parsed_output.get("result") if isinstance(parsed_output, dict) else None
     if isinstance(nested, str) and nested.strip():
         return nested
+    if isinstance(parsed_output, dict) and parsed_output:
+        return json.dumps(parsed_output)
     return raw_output
 
 
