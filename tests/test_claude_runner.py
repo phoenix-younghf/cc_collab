@@ -3,10 +3,19 @@ from __future__ import annotations
 from unittest import TestCase
 from unittest.mock import patch
 
-from runtime.claude_runner import RESEARCH_AGENT_PACK, build_command, run_claude
+from runtime.claude_runner import RESEARCH_AGENT_PACK, build_command, resolve_claude_launcher, run_claude
 
 
 class ClaudeRunnerTests(TestCase):
+    @patch("runtime.claude_runner.shutil.which")
+    def test_resolve_claude_launcher_falls_back_to_claude_cmd(self, mock_which) -> None:
+        launcher = r"C:\Users\zengs\AppData\Local\Programs\claude\claude.cmd"
+        mock_which.side_effect = lambda name: launcher if name == "claude.cmd" else None
+
+        resolved = resolve_claude_launcher()
+
+        self.assertEqual(resolved, launcher)
+
     def test_build_command_includes_schema_and_add_dir(self) -> None:
         cmd = build_command(
             workdir="/tmp/project",

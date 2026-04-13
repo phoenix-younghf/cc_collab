@@ -648,6 +648,59 @@ class CliIntegrationTests(TestCase):
 
         self.assertEqual(json.loads(repair_source), parsed_output)
 
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    @patch("runtime.cli.capture_git_head", side_effect=["before", "before"])
+    def test_filesystem_only_run_repairs_partial_result_and_writes_artifact(
+        self,
+        _mock_head,
+        _mock_status,
+        _mock_changes,
+    ) -> None:
+        partial_payload = {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": json.dumps(
+                {
+                    "task_id": "task-2d",
+                    "status": "completed",
+                    "summary": "smoke ok",
+                    "execution_mode": "single-worker",
+                    "write_policy": "read-only",
+                    "runtime_path": "filesystem-only",
+                    "constraints_honored": True,
+                    "result": {
+                        "artifact_written": True,
+                    },
+                }
+            ),
+        }
+        call_count = 0
+
+        def fake_run(command: list[str]) -> tuple[str, str]:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return json.dumps(partial_payload), ""
+            repair_prompt = command[-1]
+            self.assertIn('"task_id": "task-2d"', repair_prompt)
+            self.assertNotIn('"type": "result"', repair_prompt)
+            return completed_output("task-2d", notes="repair"), ""
+
+        with TemporaryDirectory() as tmp:
+            request = write_request(tmp, task_id="task-2d", write_policy="read-only")
+            with patch("runtime.cli.detect_runtime_capabilities", return_value=filesystem_only_caps()):
+                with patch("runtime.cli.run_claude", side_effect=fake_run):
+                    exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            task_dir = Path(tmp) / "task-2d"
+            result = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 0)
+            self.assertTrue((task_dir / "result.json").exists())
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["runtime_mode"], "filesystem-only")
+            self.assertEqual(call_count, 2)
+
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1"), ""))
     @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
     @patch("runtime.cli.capture_git_status", return_value="")
