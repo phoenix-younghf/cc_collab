@@ -23,6 +23,31 @@ powershell -ExecutionPolicy Bypass -File ./install/install-all.ps1
 ccollab doctor
 ```
 
+## Source Install vs Installed Tool Update
+
+Use the repo installer only for first-time setup or when developing from source:
+
+- `./install/install-all.sh` (macOS / Linux)
+- `powershell -ExecutionPolicy Bypass -File ./install/install-all.ps1` (Windows)
+
+Use release updates for already-installed users from any directory:
+
+```bash
+ccollab version
+ccollab update
+```
+
+```powershell
+ccollab version
+ccollab update
+```
+
+`ccollab update` upgrades the installed tool payload only. It does not pull source from your current checkout.
+
+## Release Gate
+
+Release automation keeps GitHub releases in `draft` until manual native Windows validation passes. Maintainers must complete [docs/release/ccollab-update-checklist.md](docs/release/ccollab-update-checklist.md) before publishing the release.
+
 ## Quick Start
 
 Use the Codex skill at `delegate-to-claude-code` when the task is suitable for local Claude delegation, then run `ccollab` commands for request execution and closeout verification.

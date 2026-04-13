@@ -86,3 +86,37 @@ class InstallDocsTests(TestCase):
         self.assertIn("remains `git-aware`", readme)
         self.assertIn("filesystem-copy isolation", readme)
         self.assertIn("remains `git-aware`", skill.lower())
+
+    def test_readme_mentions_version_and_update_commands(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("ccollab version", readme)
+        self.assertIn("ccollab update", readme)
+
+    def test_readme_mentions_draft_release_windows_gate(self) -> None:
+        readme = Path("README.md").read_text(encoding="utf-8")
+        self.assertIn("draft", readme.lower())
+        self.assertIn("Windows", readme)
+        self.assertIn("ccollab-update-checklist", readme)
+
+    def test_agents_doc_points_to_release_checklist(self) -> None:
+        agents = Path("AGENTS.md").read_text(encoding="utf-8")
+        self.assertIn("ccollab-update-checklist", agents)
+        self.assertIn("ccollab version", agents)
+        self.assertIn("ccollab update", agents)
+
+    def test_release_checklist_includes_required_windows_validations(self) -> None:
+        checklist = Path("docs/release/ccollab-update-checklist.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("native Windows update from outside the install root", checklist)
+        self.assertIn("native Windows update from inside the install root", checklist)
+        self.assertIn("forced verification failure", checklist)
+        self.assertIn("rollback", checklist.lower())
+        self.assertIn("stale-lock", checklist.lower())
+        self.assertIn("path", checklist.lower())
+        self.assertIn("spaces", checklist.lower())
+        self.assertIn("PowerShell", checklist)
+        self.assertIn("CMD", checklist)
+        self.assertIn("ccollab version", checklist)
+        self.assertIn("ccollab update", checklist)
+        self.assertIn("& $HOME\\.local\\bin\\ccollab.cmd update", checklist)

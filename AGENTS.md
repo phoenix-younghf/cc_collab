@@ -15,6 +15,20 @@ Install:
 powershell -ExecutionPolicy Bypass -File ./install/install-all.ps1
 ```
 
+Installed-tool updates (run from any directory after install):
+
+```bash
+ccollab version
+ccollab update
+```
+
+```powershell
+ccollab version
+ccollab update
+```
+
+Use install scripts for source/bootstrap setup, and use `ccollab update` for release-based upgrades of an existing install.
+
 Verify:
 
 ```bash
@@ -32,6 +46,10 @@ py -3 -m runtime.cli doctor
 ```
 
 If `py` is unavailable, use `python`.
+
+Release gate note:
+
+- Draft releases must stay unpublished until the native Windows checks in `docs/release/ccollab-update-checklist.md` pass.
 
 Install-root note:
 
