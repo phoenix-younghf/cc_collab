@@ -38,14 +38,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
+          release_api_path="repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
+          if ! gh api "${release_api_path}" >/dev/null 2>&1; then
             gh release create "${RELEASE_TAG}" \
               --repo "${RELEASE_REPO}" \
               --title "${RELEASE_TAG}" \
               --notes "Draft release for ${RELEASE_TAG}" \
               --draft
           fi
-          release_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json id --jq '.id')"
+          release_id="$(gh api "${release_api_path}" --jq '.id')"
           gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
 
       - name: Upload platform archives first
@@ -66,10 +67,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json id --jq '.id')"
-          windows_asset_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json assets --jq '.assets[] | select(.name == "ccollab-windows-x64.zip") | .id')"
-          macos_asset_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json assets --jq '.assets[] | select(.name == "ccollab-macos-universal.tar.gz") | .id')"
-          linux_asset_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json assets --jq '.assets[] | select(.name == "ccollab-linux-x64.tar.gz") | .id')"
+          release_api_path="repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
+          release_id="$(gh api "${release_api_path}" --jq '.id')"
+          windows_asset_id="$(gh api "${release_api_path}" --jq '.assets[] | select(.name == "ccollab-windows-x64.zip") | .id')"
+          macos_asset_id="$(gh api "${release_api_path}" --jq '.assets[] | select(.name == "ccollab-macos-universal.tar.gz") | .id')"
+          linux_asset_id="$(gh api "${release_api_path}" --jq '.assets[] | select(.name == "ccollab-linux-x64.tar.gz") | .id')"
+          for asset_id in "${windows_asset_id}" "${macos_asset_id}" "${linux_asset_id}"; do
+            if [ -z "${asset_id}" ]; then
+              echo "One or more release asset IDs are missing after archive upload."
+              exit 1
+            fi
+          done
           {
             echo "release_id=${release_id}"
             echo "windows_asset_id=${windows_asset_id}"
@@ -105,7 +113,7 @@ jobs:
           set -euo pipefail
           release_id="${{ steps.release_identity.outputs.release_id }}"
           gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
-          is_draft="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json isDraft --jq '.isDraft')"
+          is_draft="$(gh api "repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}" --jq '.draft')"
           if [ "${is_draft}" != "true" ]; then
             echo "Release ${RELEASE_TAG} must remain draft for manual Windows validation."
             exit 1
