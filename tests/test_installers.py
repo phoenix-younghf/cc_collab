@@ -5,9 +5,13 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase, skipUnless
+
+from runtime.constants import CCOLLAB_PROJECT_VERSION
+from runtime.versioning import read_install_metadata, resolve_platform_identifier
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -35,12 +39,19 @@ def _write_executable(path: Path, content: str) -> None:
 
 def _make_fake_python(bin_dir: Path, *, supported: bool = True) -> Path:
     log_path = bin_dir / "fake-python.log"
+    real_python = sys.executable
     script = f"""#!{BASH}
 set -euo pipefail
 printf 'ARGS=%s\\n' "$*" >>"${{CCOLLAB_FAKE_PYTHON_LOG}}"
 printf 'PYTHONPATH=%s\\n' "${{PYTHONPATH-}}" >>"${{CCOLLAB_FAKE_PYTHON_LOG}}"
 if [ "${{1-}}" = "-c" ]; then
-    exit {0 if supported else 1}
+    if [ {1 if supported else 0} -eq 0 ]; then
+        exit 1
+    fi
+    exec {real_python!r} "$@"
+fi
+if [ "${{1-}}" = "-m" ] && [ "${{2-}}" = "runtime.versioning" ]; then
+    exec {real_python!r} "$@"
 fi
 if [ "${{1-}}" = "-m" ] && [ "${{2-}}" = "runtime.cli" ] && [ "${{3-}}" = "doctor" ]; then
     printf '%b' "${{CCOLLAB_FAKE_DOCTOR_STDOUT:-Doctor status: OK\\n}}"
@@ -99,6 +110,7 @@ exit {0 if succeeds else 1}
 
 def _make_fake_windows_python(bin_dir: Path) -> Path:
     log_path = bin_dir / "fake-python.log"
+    real_python = sys.executable.replace("\\", "\\\\")
     script = rf"""@echo off
 setlocal
 >> "%CCOLLAB_FAKE_PYTHON_LOG%" echo ARGS=%*
@@ -107,7 +119,12 @@ if "%~1"=="-3" (
     shift
 )
 if "%~1"=="-c" (
-    exit /b 0
+    "{real_python}" %*
+    exit /b %errorlevel%
+)
+if "%~1"=="-m" if "%~2"=="runtime.versioning" (
+    "{real_python}" %*
+    exit /b %errorlevel%
 )
 if "%~1"=="-m" if "%~2"=="runtime.cli" if "%~3"=="doctor" (
     echo Doctor status: OK
@@ -370,6 +387,14 @@ class InstallerTests(TestCase):
             install_root = _platform_install_root(Path(tmp) / "home")
             self.assertEqual(result.returncode, 0)
             self.assertTrue((install_root / "install-metadata.json").exists())
+            metadata = read_install_metadata(install_root)
+            self.assertEqual(metadata.version, CCOLLAB_PROJECT_VERSION)  # type: ignore[union-attr]
+            self.assertEqual(metadata.channel, "stable")  # type: ignore[union-attr]
+            self.assertEqual(metadata.repo, "owner/cc_collab")  # type: ignore[union-attr]
+            self.assertEqual(metadata.platform, resolve_platform_identifier())  # type: ignore[union-attr]
+            self.assertEqual(metadata.asset_name, "unknown")  # type: ignore[union-attr]
+            self.assertEqual(metadata.asset_sha256, "unknown")  # type: ignore[union-attr]
+            self.assertEqual(metadata.install_root, str(install_root))  # type: ignore[union-attr]
 
     @skipUnless(shutil.which("pwsh"), "pwsh required for PowerShell bootstrap behavior")
     def test_install_all_ps1_writes_install_metadata(self) -> None:

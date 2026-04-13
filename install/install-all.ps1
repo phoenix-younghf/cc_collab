@@ -87,28 +87,34 @@ function Copy-Payload {
 function Write-InstallMetadata {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$InstallRoot
+        [string]$InstallRoot,
+        [Parameter(Mandatory = $true)]
+        [string[]]$PythonCommand
     )
 
-    $constantsPath = Join-Path $InstallRoot "runtime\constants.py"
-    $constantsText = Get-Content -Path $constantsPath -Raw
-    $match = [regex]::Match($constantsText, '^CCOLLAB_PROJECT_VERSION = "(?<version>[^"]+)"$', [System.Text.RegularExpressions.RegexOptions]::Multiline)
-    if (-not $match.Success) {
-        throw "Unable to resolve ccollab project version from installed payload."
+    $commandName = $PythonCommand[0]
+    $commandArgs = @()
+    if ($PythonCommand.Length -gt 1) {
+        $commandArgs = $PythonCommand[1..($PythonCommand.Length - 1)]
     }
-    $payload = [ordered]@{
-        version = $match.Groups["version"].Value
-        channel = "stable"
-        repo = "owner/cc_collab"
-        platform = "windows-x64"
-        installed_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-        asset_name = "unknown"
-        asset_sha256 = "unknown"
-        install_root = $InstallRoot
+    $previousPythonPath = $env:PYTHONPATH
+    try {
+        $env:PYTHONPATH = if ($previousPythonPath) {
+            "$InstallRoot$([IO.Path]::PathSeparator)$previousPythonPath"
+        } else {
+            $InstallRoot
+        }
+        & $commandName @commandArgs -m runtime.versioning write-install-metadata $InstallRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to write install metadata."
+        }
+    } finally {
+        if ($null -ne $previousPythonPath) {
+            $env:PYTHONPATH = $previousPythonPath
+        } else {
+            Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+        }
     }
-    $metadataPath = Join-Path $InstallRoot "install-metadata.json"
-    $json = $payload | ConvertTo-Json
-    Set-Content -Path $metadataPath -Value $json -Encoding utf8
 }
 
 $PythonCommand = Find-PythonCommand
@@ -123,7 +129,7 @@ if (-not $PythonCommand) {
 $InstallRoot = Get-InstallRoot
 $env:CCOLLAB_RUNTIME_ROOT = $InstallRoot
 Copy-Payload -InstallRoot $InstallRoot
-Write-InstallMetadata -InstallRoot $InstallRoot
+Write-InstallMetadata -InstallRoot $InstallRoot -PythonCommand $PythonCommand
 
 & (Join-Path $Root "install\install-skill.ps1")
 & (Join-Path $Root "install\install-bin.ps1")

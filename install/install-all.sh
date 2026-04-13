@@ -56,36 +56,8 @@ copy_payload() {
 
 write_install_metadata() {
   local install_root="$1"
-  local version
-  version="$(sed -n 's/^CCOLLAB_PROJECT_VERSION = "\(.*\)"$/\1/p' "$install_root/runtime/constants.py")"
-  if [[ -z "$version" ]]; then
-    echo "Unable to resolve ccollab project version from installed payload." >&2
-    return 1
-  fi
-
-  local platform_id
-  if [[ "$(uname -s)" == "Darwin" ]]; then
-    platform_id="macos-universal"
-  else
-    platform_id="linux-x64"
-  fi
-
-  local installed_at
-  installed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  local escaped_install_root
-  escaped_install_root="$(printf '%s' "$install_root" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-  cat >"$install_root/install-metadata.json" <<EOF
-{
-  "version": "$version",
-  "channel": "stable",
-  "repo": "owner/cc_collab",
-  "platform": "$platform_id",
-  "installed_at": "$installed_at",
-  "asset_name": "unknown",
-  "asset_sha256": "unknown",
-  "install_root": "$escaped_install_root"
-}
-EOF
+  PYTHONPATH="$install_root${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PYTHON" -m runtime.versioning write-install-metadata "$install_root"
 }
 
 refresh_session_path() {

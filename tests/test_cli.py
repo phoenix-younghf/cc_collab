@@ -350,7 +350,18 @@ class CliVersionTests(TestCase):
                 with redirect_stdout(stdout):
                     exit_code = main(["version"])
             self.assertEqual(exit_code, 0)
-            self.assertIn("ccollab 0.4.2", stdout.getvalue())
+            self.assertEqual(
+                stdout.getvalue(),
+                "\n".join(
+                    [
+                        "ccollab 0.4.2",
+                        f"install root: {install_root}",
+                        "source: github.com/owner/cc_collab",
+                        "channel: stable",
+                        "",
+                    ]
+                ),
+            )
 
     def test_version_reports_legacy_install(self) -> None:
         discovery = InstallDiscovery(
@@ -366,8 +377,18 @@ class CliVersionTests(TestCase):
             with redirect_stdout(stdout):
                 exit_code = main(["version"])
         self.assertEqual(exit_code, 0)
-        self.assertIn("ccollab unknown", stdout.getvalue())
-        self.assertIn("legacy-install", stdout.getvalue())
+        self.assertEqual(
+            stdout.getvalue(),
+            "\n".join(
+                [
+                    "ccollab unknown",
+                    "install root: /tmp/legacy-install",
+                    "source: legacy-install",
+                    "channel: unknown",
+                    "",
+                ]
+            ),
+        )
 
     def test_version_reports_multiple_install_remediation(self) -> None:
         with patch(
