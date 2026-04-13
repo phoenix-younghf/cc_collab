@@ -643,6 +643,24 @@ class UpdaterTransactionTests(TestCase):
             self.assertFalse(outside_path.exists())
             self.assertEqual(_snapshot_tree(install_root), before)
 
+    def test_tar_symlink_escape_is_rejected_without_outside_write(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root)
+            traversal_archive = root / "traversal-symlink.tar.gz"
+            with tarfile.open(traversal_archive, mode="w:gz") as archive:
+                member = tarfile.TarInfo(name="runtime/escape-link")
+                member.type = tarfile.SYMTYPE
+                member.linkname = "../escaped-link-target"
+                archive.addfile(member)
+            stage_root = root / "staged"
+            outside_path = root / "escaped-link-target"
+            before = _snapshot_tree(install_root)
+            with self.assertRaises(InvalidArchiveError):
+                extract_release_archive(traversal_archive, stage_root)
+            self.assertFalse(outside_path.exists())
+            self.assertEqual(_snapshot_tree(install_root), before)
+
     def test_acquire_update_lock_records_owner_metadata(self) -> None:
         with TemporaryDirectory() as tmp:
             install_root = _seed_install_root(Path(tmp))
@@ -662,6 +680,17 @@ class UpdaterTransactionTests(TestCase):
             with self.assertRaises(UpdateLockedError):
                 recover_or_acquire_lock(install_root, current_pid=999)
             self.assertTrue(lock_path.exists())
+
+    def test_acquire_update_lock_cleans_up_lock_when_metadata_write_fails(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp))
+            lock_path = install_root.parent / ".ccollab-update.lock"
+            record_path = install_root.parent / ".ccollab-update.lock.json"
+            with patch("runtime.updater._write_lock_record", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    acquire_update_lock(install_root, pid=999)
+            self.assertFalse(lock_path.exists())
+            self.assertFalse(record_path.exists())
 
     def test_recover_or_acquire_lock_refuses_unreadable_record_without_stale_proof(self) -> None:
         with TemporaryDirectory() as tmp:

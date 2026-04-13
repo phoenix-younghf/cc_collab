@@ -310,15 +310,25 @@ def _claim_lock(
     finally:
         os.close(descriptor)
 
-    _write_lock_record(
-        record_path,
-        UpdateLockRecord(
-            pid=pid,
-            hostname=hostname,
-            install_root=str(install_root),
-            acquired_at=_timestamp_utc(),
-        ),
-    )
+    try:
+        _write_lock_record(
+            record_path,
+            UpdateLockRecord(
+                pid=pid,
+                hostname=hostname,
+                install_root=str(install_root),
+                acquired_at=_timestamp_utc(),
+            ),
+        )
+    except Exception:
+        for stale_path in (record_path, lock_path):
+            try:
+                stale_path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+        raise
     return UpdateLock(
         install_root=install_root,
         lock_path=lock_path,
@@ -572,6 +582,10 @@ def extract_release_archive(archive_path: Path, stage_root: Path) -> None:
             with tarfile.open(archive_path, mode="r:gz") as archive:
                 for member in archive.getmembers():
                     _validate_member_path(resolved_stage_root, member.name)
+                    if member.issym() or member.islnk():
+                        raise InvalidArchiveError(
+                            f"Tar archive member uses unsupported link type: {member.name!r}"
+                        )
                 archive.extractall(stage_root)
             return
         raise InvalidArchiveError(f"Unsupported archive format: {archive_path.name}")
