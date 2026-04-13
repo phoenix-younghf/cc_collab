@@ -390,6 +390,31 @@ class CliVersionTests(TestCase):
             ),
         )
 
+    def test_version_degrades_invalid_metadata_to_legacy_install(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "install"
+            (install_root / "runtime").mkdir(parents=True)
+            (install_root / "bin").mkdir()
+            (install_root / "install-metadata.json").write_text('{"version": ', encoding="utf-8")
+            stdout = io.StringIO()
+            with patch("runtime.cli.get_active_runtime_root", return_value=install_root):
+                with patch.dict(os.environ, {"HOME": tmp}, clear=True):
+                    with redirect_stdout(stdout):
+                        exit_code = main(["version"])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                stdout.getvalue(),
+                "\n".join(
+                    [
+                        "ccollab unknown",
+                        f"install root: {install_root}",
+                        "source: legacy-install",
+                        "channel: unknown",
+                        "",
+                    ]
+                ),
+            )
+
     def test_version_reports_multiple_install_remediation(self) -> None:
         with patch(
             "runtime.cli.discover_install_root",

@@ -149,22 +149,21 @@ class VersioningTests(TestCase):
             self.assertEqual(discovery.status, "legacy-install")
             self.assertEqual(discovery.version, "unknown")
 
-    def test_discover_install_root_surfaces_invalid_metadata_as_discovery_error(self) -> None:
+    def test_discover_install_root_treats_invalid_metadata_as_legacy_install(self) -> None:
         with TemporaryDirectory() as tmp:
             install_root = Path(tmp) / "install"
             (install_root / "runtime").mkdir(parents=True)
             (install_root / "bin").mkdir()
             (install_root / "install-metadata.json").write_text('{"version": ', encoding="utf-8")
-            with self.assertRaisesRegex(
-                InvalidInstallMetadataError,
-                "Reinstall ccollab to repair the install, then retry.",
-            ):
-                discover_install_root(
-                    active_runtime_root=None,
-                    env={"HOME": tmp},
-                    os_name="posix",
-                    default_install_root=install_root,
-                )
+            discovery = discover_install_root(
+                active_runtime_root=None,
+                env={"HOME": tmp},
+                os_name="posix",
+                default_install_root=install_root,
+            )
+            self.assertEqual(discovery.install_root, install_root)
+            self.assertEqual(discovery.status, "legacy-install")
+            self.assertEqual(discovery.version, "unknown")
 
     def test_discover_install_root_returns_legacy_when_payload_exists_without_metadata(self) -> None:
         with TemporaryDirectory() as tmp:

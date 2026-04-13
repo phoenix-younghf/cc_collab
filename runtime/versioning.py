@@ -226,7 +226,10 @@ def discover_install_root(
         )
 
     _, install_root = valid_pairs[0]
-    metadata = read_install_metadata(install_root)
+    try:
+        metadata = read_install_metadata(install_root)
+    except InvalidInstallMetadataError:
+        return _legacy_discovery(install_root)
     if metadata is None:
         return _legacy_discovery(install_root)
     return _installed_discovery(install_root, metadata)
