@@ -28,6 +28,8 @@
   - Manifest dataclasses, validation, asset lookup, and release-identity checks.
 - `runtime/updater.py`
   - GitHub release resolution, lock handling, compatibility preflight, same-volume work-area creation, swap/rollback orchestration, and helper handoff.
+- `runtime/update_execution.py`
+  - Swap planning, post-install verification helpers, and rollback-aware install-root apply operations.
 - `scripts/build_release_payload.py`
   - Build per-platform archives and create the manifest input/final manifest payload used by the release workflow.
 - `.github/workflows/release.yml`
@@ -743,6 +745,7 @@ git commit -m "feat: add updater transaction primitives"
 ### Task 4: `ccollab update` And Windows-Safe Swap Execution
 
 **Files:**
+- Create: `runtime/update_execution.py`
 - Modify: `runtime/cli.py`
 - Modify: `runtime/updater.py`
 - Modify: `tests/test_cli.py`
@@ -874,6 +877,7 @@ Expected: FAIL because neutral-workdir prep, helper swap planning, and verificat
 - [ ] **Step 6: Implement helper-based Windows swap and direct post-install verification**
 
 Implementation requirements:
+- keep `runtime/updater.py` as the higher-level update façade and place swap/verification execution helpers in `runtime/update_execution.py`
 - if the current process cannot safely rename the active install tree, persist swap intent and hand off to a helper process outside the tree
 - ensure both parent and helper run outside install/staging/backup directories
 - use rename-only semantics for backup/install swaps
