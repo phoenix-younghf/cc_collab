@@ -13,7 +13,12 @@ from runtime.release_manifest import ReleaseManifest, validate_release_identity
 _SEMVER_TAG_PATTERN = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 _AUTH_ERROR_MARKERS = ("gh auth login", "not logged", "authentication failed")
 _REPO_ACCESS_MARKERS = ("http 404", "http 403", "not found", "resource not accessible")
-_DEFAULT_RELEASE_LIST_LIMIT = "100"
+_DOWNLOAD_REPO_ACCESS_MARKERS = (
+    "repository not found",
+    "could not resolve to a repository",
+    "resource not accessible by integration",
+    "access denied to repository",
+)
 
 ReleaseListRunner = Callable[[str], list[dict[str, Any]]]
 ReleaseDownloadRunner = Callable[[str, int, str, int | None], bytes]
@@ -76,8 +81,6 @@ def _default_release_list_runner(repo: str) -> list[dict[str, Any]]:
             "list",
             "--repo",
             repo,
-            "--limit",
-            _DEFAULT_RELEASE_LIST_LIMIT,
             "--json",
             "databaseId,tagName,isDraft,isPrerelease,publishedAt",
         ],
@@ -213,9 +216,13 @@ def _translate_release_download_error(
     repo: str,
     exc: FileNotFoundError | subprocess.CalledProcessError,
 ) -> UpdaterError:
-    translated = _translate_release_resolution_error(repo, exc)
-    if isinstance(translated, (GhPrerequisiteError, GhAuthenticationError, RepoAccessError)):
-        return translated
+    if isinstance(exc, FileNotFoundError):
+        return GhPrerequisiteError("Install GitHub CLI and run 'gh auth login'.")
+    markers = _called_process_markers(exc)
+    if any(marker in markers for marker in _AUTH_ERROR_MARKERS):
+        return GhAuthenticationError("Run 'gh auth login' for github.com, then retry.")
+    if any(marker in markers for marker in _DOWNLOAD_REPO_ACCESS_MARKERS):
+        return RepoAccessError(f"Authenticated GitHub CLI could not access {repo} releases.")
     detail = _command_text(exc) if isinstance(exc, subprocess.CalledProcessError) else str(exc)
     return DownloadError(detail or f"Failed to download release asset from {repo}")
 

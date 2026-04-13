@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from unittest import TestCase
+from unittest.mock import patch
 
 from runtime.release_manifest import parse_release_manifest
 from runtime.updater import (
@@ -16,6 +18,16 @@ from runtime.updater import (
     download_release_manifest,
     resolve_latest_stable_release,
 )
+
+
+def _stable_release_payload(major: int, minor: int, patch_level: int, *, release_id: int) -> dict[str, object]:
+    return {
+        "tagName": f"v{major}.{minor}.{patch_level}",
+        "databaseId": release_id,
+        "publishedAt": "2026-04-13T12:00:00Z",
+        "isDraft": False,
+        "isPrerelease": False,
+    }
 
 
 class FakeGh:
@@ -68,6 +80,32 @@ class FakeGh:
 
 
 class UpdaterReleaseResolutionTests(TestCase):
+    def test_resolve_latest_stable_release_uses_canonical_repo_without_limit_ceiling(self) -> None:
+        release_list = [
+            _stable_release_payload(0, 4, patch_level, release_id=1000 + patch_level)
+            for patch_level in range(150)
+        ]
+
+        def fake_run(args: list[str], *, text: bool, capture_output: bool, check: bool) -> subprocess.CompletedProcess[str]:
+            self.assertEqual(args[:4], ["gh", "release", "list", "--repo"])
+            self.assertEqual(args[4], "phoenix-younghf/cc_collab")
+            self.assertNotIn("--limit", args)
+            self.assertTrue(text)
+            self.assertTrue(capture_output)
+            self.assertFalse(check)
+            return subprocess.CompletedProcess(
+                args=args,
+                returncode=0,
+                stdout=json.dumps(release_list),
+                stderr="",
+            )
+
+        with patch("runtime.updater.subprocess.run", side_effect=fake_run):
+            release = resolve_latest_stable_release()
+
+        self.assertEqual(release.tag, "v0.4.149")
+        self.assertEqual(release.release_id, 1149)
+
     def test_resolve_latest_stable_release_reports_missing_gh(self) -> None:
         runner = FakeGh(error=FileNotFoundError("gh missing"))
         with self.assertRaisesRegex(GhPrerequisiteError, "Install GitHub CLI"):
@@ -158,8 +196,18 @@ class UpdaterReleaseResolutionTests(TestCase):
             )
 
     def test_download_release_manifest_reports_repo_access_denied(self) -> None:
-        runner = FakeGh(stderr="HTTP 404", returncode=1)
+        runner = FakeGh(stderr="repository not found", returncode=1)
         with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+            download_release_manifest(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_name="ccollab-manifest.json",
+                runner=runner.run_download,
+            )
+
+    def test_download_release_manifest_reports_missing_asset_as_download_error(self) -> None:
+        runner = FakeGh(stderr="asset not found", returncode=1)
+        with self.assertRaisesRegex(DownloadError, "asset not found"):
             download_release_manifest(
                 repo="owner/cc_collab",
                 release_id=123,
@@ -201,8 +249,19 @@ class UpdaterReleaseResolutionTests(TestCase):
             )
 
     def test_download_platform_asset_reports_repo_access_denied(self) -> None:
-        runner = FakeGh(stderr="HTTP 404", returncode=1)
+        runner = FakeGh(stderr="repository not found", returncode=1)
         with self.assertRaisesRegex(RepoAccessError, "could not access owner/cc_collab releases"):
+            download_release_asset(
+                repo="owner/cc_collab",
+                release_id=123,
+                asset_id=111,
+                asset_name="ccollab-windows-x64.zip",
+                runner=runner.run_download,
+            )
+
+    def test_download_platform_asset_reports_missing_asset_as_download_error(self) -> None:
+        runner = FakeGh(stderr="release asset was deleted", returncode=1)
+        with self.assertRaisesRegex(DownloadError, "release asset was deleted"):
             download_release_asset(
                 repo="owner/cc_collab",
                 release_id=123,
