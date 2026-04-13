@@ -36,6 +36,16 @@ from runtime.request_renderer import render_request_markdown
 from runtime.result_parser import parse_result
 from runtime.result_renderer import render_result_markdown
 from runtime.schema_loader import load_schema_text
+from runtime.updater import (
+    BrokenLauncherError,
+    CompatibilityError,
+    GhAuthenticationError,
+    GhPrerequisiteError,
+    RepoAccessError,
+    UpdateResult,
+    UpdaterError,
+    run_update,
+)
 from runtime.validators import ValidationError, validate_request, validate_result
 from runtime.versioning import (
     InstallDiscoveryError,
@@ -95,6 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("doctor")
     subparsers.add_parser("version")
+    subparsers.add_parser("update")
     return parser
 
 
@@ -1000,6 +1011,62 @@ def handle_version() -> int:
     return 0
 
 
+def _print_update_result(result: UpdateResult) -> int:
+    print(f"Current version: {result.current_version}")
+    print(f"Latest version: {result.latest_version}")
+    if result.status == "noop":
+        print("ccollab is already up to date.")
+        return 0
+    for message in result.progress_messages:
+        print(message)
+    print(f"Updated ccollab to {result.latest_version}")
+    return 0
+
+
+def _print_update_failure(exc: UpdaterError) -> int:
+    current_version = getattr(exc, "current_version", None)
+    latest_version = getattr(exc, "latest_version", None)
+    if isinstance(current_version, str) and isinstance(latest_version, str):
+        print(f"Current version: {current_version}", file=sys.stderr)
+        print(f"Latest version: {latest_version}", file=sys.stderr)
+    for message in getattr(exc, "progress_messages", ()):
+        print(message, file=sys.stderr)
+    print(f"Update failed: {exc}", file=sys.stderr)
+    rollback_succeeded = getattr(exc, "rollback_succeeded", None)
+    if rollback_succeeded is True:
+        print("Previous installation was restored.", file=sys.stderr)
+    elif rollback_succeeded is False:
+        print("Rollback failed; manual repair may be required.", file=sys.stderr)
+    else:
+        print("Existing installation was left unchanged.", file=sys.stderr)
+    return 1
+
+
+def handle_update() -> int:
+    try:
+        return _print_update_result(run_update())
+    except CompatibilityError as exc:
+        print(
+            "This release requires a newer local runtime dependency. "
+            "Fix the reported Python or Claude requirement, then retry.",
+            file=sys.stderr,
+        )
+        print(str(exc), file=sys.stderr)
+        return 1
+    except (
+        MultipleInstallRootsError,
+        InstallDiscoveryError,
+        BrokenLauncherError,
+        GhPrerequisiteError,
+        GhAuthenticationError,
+        RepoAccessError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except UpdaterError as exc:
+        return _print_update_failure(exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1016,6 +1083,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_doctor()
         if args.command == "version":
             return handle_version()
+        if args.command == "update":
+            return handle_update()
         parser.print_help()
         return 0
     except (FileNotFoundError, ValidationError, ValueError) as exc:

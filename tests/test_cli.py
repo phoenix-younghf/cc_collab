@@ -21,8 +21,19 @@ from runtime.capabilities import (
 )
 from runtime.cli import main
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
+from runtime.updater import (
+    BrokenLauncherError,
+    CompatibilityError,
+    GhAuthenticationError,
+    GhPrerequisiteError,
+    RepoAccessError,
+    UpdateExecutionError,
+    UpdateResult,
+    UpdaterError,
+)
 from runtime.versioning import (
     InstallDiscovery,
+    InstallRootNotFoundError,
     InstallMetadata,
     MultipleInstallRootsError,
     read_install_metadata,
@@ -427,6 +438,196 @@ class CliVersionTests(TestCase):
                 exit_code = main(["version"])
         self.assertNotEqual(exit_code, 0)
         self.assertIn("CCOLLAB_RUNTIME_ROOT", stderr.getvalue())
+
+
+class CliUpdateTests(TestCase):
+    def test_update_reports_already_up_to_date(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            return_value=UpdateResult.noop(current_version="0.4.2", latest_version="0.4.2"),
+        ):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(["update"])
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("Current version: 0.4.2", output)
+        self.assertIn("Latest version: 0.4.2", output)
+        self.assertIn("already up to date", output)
+
+    def test_update_reports_success_for_legacy_unknown_install(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            return_value=UpdateResult.success(current_version="unknown", latest_version="0.4.2"),
+        ):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(["update"])
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("Current version: unknown", output)
+        self.assertIn("Latest version: 0.4.2", output)
+        self.assertIn("Updated ccollab to 0.4.2", output)
+
+    def test_update_renders_progress_messages_before_success_line(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            return_value=UpdateResult.success(
+                current_version="0.4.1",
+                latest_version="0.4.2",
+                progress_messages=(
+                    "Downloading ccollab-linux-x64.tar.gz...",
+                    "Verifying checksum...",
+                    "Installing update...",
+                    "Running post-install verification...",
+                ),
+            ),
+        ):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(["update"])
+        self.assertEqual(exit_code, 0)
+        output = stdout.getvalue()
+        self.assertIn("Downloading ccollab-linux-x64.tar.gz...", output)
+        self.assertIn("Verifying checksum...", output)
+        self.assertIn("Installing update...", output)
+        self.assertIn("Running post-install verification...", output)
+        self.assertIn("Updated ccollab to 0.4.2", output)
+
+    def test_update_does_not_create_task_artifacts(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            return_value=UpdateResult.noop(current_version="0.4.2", latest_version="0.4.2"),
+        ):
+            with patch("runtime.cli.create_task_dir") as create_task_dir_mock:
+                exit_code = main(["update"])
+        self.assertEqual(exit_code, 0)
+        create_task_dir_mock.assert_not_called()
+
+    def test_update_reports_missing_install_root_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=InstallRootNotFoundError(
+                "No valid ccollab install was found. Reinstall ccollab using the normal install flow, then retry."
+            ),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("normal install flow", stderr.getvalue())
+
+    def test_update_reports_broken_launcher_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=BrokenLauncherError(
+                "Launcher is missing or unhealthy. Reinstall ccollab to repair the launcher, then retry."
+            ),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("repair the launcher", stderr.getvalue())
+
+    def test_update_reports_multiple_install_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=MultipleInstallRootsError(
+                "Multiple ccollab installs were detected. Set CCOLLAB_RUNTIME_ROOT to the intended install and retry."
+            ),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("CCOLLAB_RUNTIME_ROOT", stderr.getvalue())
+
+    def test_update_reports_missing_gh_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=GhPrerequisiteError("Install GitHub CLI and run 'gh auth login'."),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("Install GitHub CLI", stderr.getvalue())
+
+    def test_update_reports_gh_authentication_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=GhAuthenticationError("Run 'gh auth login' for github.com, then retry."),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("gh auth login", stderr.getvalue())
+
+    def test_update_reports_repo_access_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=RepoAccessError("Authenticated GitHub CLI could not access owner/cc_collab releases."),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("could not access", stderr.getvalue())
+
+    def test_update_reports_dependency_compatibility_remediation(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=CompatibilityError("Python 3.8.18 does not satisfy manifest minimum 3.9.0."),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        output = stderr.getvalue()
+        self.assertIn("newer local runtime dependency", output)
+        self.assertIn("Python 3.8.18", output)
+
+    def test_update_reports_generic_failure(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=UpdaterError("checksum mismatch"),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        output = stderr.getvalue()
+        self.assertIn("Update failed: checksum mismatch", output)
+        self.assertIn("Existing installation was left unchanged.", output)
+
+    def test_update_reports_successful_rollback_after_failed_verification(self) -> None:
+        with patch(
+            "runtime.cli.run_update",
+            side_effect=UpdateExecutionError(
+                "doctor failed",
+                current_version="0.4.1",
+                latest_version="0.4.2",
+                progress_messages=(
+                    "Downloading ccollab-linux-x64.tar.gz...",
+                    "Verifying checksum...",
+                    "Installing update...",
+                    "Running post-install verification...",
+                ),
+                rollback_succeeded=True,
+            ),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["update"])
+        self.assertNotEqual(exit_code, 0)
+        output = stderr.getvalue()
+        self.assertIn("Current version: 0.4.1", output)
+        self.assertIn("Latest version: 0.4.2", output)
+        self.assertIn("Running post-install verification...", output)
+        self.assertIn("Update failed: doctor failed", output)
+        self.assertIn("Previous installation was restored.", output)
 
 
 class CliIntegrationTests(TestCase):

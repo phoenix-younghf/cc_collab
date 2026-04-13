@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from runtime.capabilities import ClaudeCapability, PythonCapability
 from runtime.release_manifest import parse_release_manifest
+from runtime.versioning import InstallDiscovery
 from runtime.updater import (
     ChecksumMismatchError,
     CompatibilityError,
@@ -23,19 +24,30 @@ from runtime.updater import (
     ReleaseIdentityError,
     RepoAccessError,
     ResolvedGitHubRelease,
+    UpdateExecutionError,
     UpdateLockedError,
+    VerificationContext,
+    VerificationError,
+    VerificationResult,
     acquire_update_lock,
+    apply_update_transaction,
     begin_windows_handoff,
+    build_windows_verification_command,
+    current_working_directory,
     create_update_work_area,
     download_platform_asset,
     download_release_asset,
     download_release_manifest,
     extract_release_archive,
     lock_handoff_active,
+    plan_update_for_install,
+    prepare_windows_swap,
     read_update_lock_record,
     recover_or_acquire_lock,
     resolve_latest_stable_release,
     run_compatibility_preflight,
+    run_update,
+    run_post_install_verification,
     stage_release_asset,
     stage_release_manifest,
     validate_staged_payload,
@@ -785,3 +797,212 @@ class UpdaterHandoffTests(TestCase):
                 with self.assertRaises(UpdateLockedError):
                     recover_or_acquire_lock(install_root, current_pid=999)
             lock.release()
+
+
+class UpdaterSwapPlanningTests(TestCase):
+    def test_update_invoked_from_inside_install_root_moves_to_neutral_workdir(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = root / "install"
+            staged_root = root / "staged-install"
+            backup_root = root / "install-backup"
+            install_root.mkdir()
+            staged_root.mkdir()
+            with patch(
+                "runtime.updater.current_working_directory",
+                return_value=install_root / "runtime",
+            ):
+                plan = prepare_windows_swap(
+                    install_root=install_root,
+                    staged_root=staged_root,
+                    backup_root=backup_root,
+                    helper_executable=root / "swap-helper.py",
+                )
+        self.assertNotEqual(plan.working_directory, install_root / "runtime")
+        self.assertFalse(str(plan.working_directory).startswith(str(install_root)))
+        self.assertTrue(plan.requires_helper)
+        self.assertIsNotNone(plan.swap_intent_path)
+
+    def test_windows_post_install_verification_uses_argument_vector(self) -> None:
+        install_root = Path(r"C:\Users\Name With Spaces\AppData\Local\cc_collab\install")
+        self.assertEqual(
+            build_windows_verification_command(install_root),
+            [
+                "cmd",
+                "/c",
+                r"C:\Users\Name With Spaces\AppData\Local\cc_collab\install\bin\ccollab.cmd",
+                "doctor",
+            ],
+        )
+
+
+class UpdaterVerificationTests(TestCase):
+    def test_post_install_verification_sets_runtime_root_env_and_timeout(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "install"
+            install_root.mkdir(parents=True)
+            completed = subprocess.CompletedProcess(
+                args=["cmd", "/c", "dummy"],
+                returncode=0,
+                stdout="doctor ok",
+                stderr="",
+            )
+            with patch("runtime.update_execution.subprocess.run", return_value=completed) as run_mock:
+                run_post_install_verification(
+                    install_root=install_root,
+                    verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
+                )
+        kwargs = run_mock.call_args.kwargs
+        self.assertEqual(kwargs["env"]["CCOLLAB_RUNTIME_ROOT"], str(install_root))
+        self.assertEqual(kwargs["timeout"], 45)
+        self.assertIsInstance(run_mock.call_args.args[0], list)
+
+    def test_post_install_verification_allows_stderr_when_exit_code_is_zero(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "install"
+            install_root.mkdir(parents=True)
+            completed = subprocess.CompletedProcess(
+                args=["cmd", "/c", "dummy"],
+                returncode=0,
+                stdout="doctor ok",
+                stderr="warning output",
+            )
+            with patch("runtime.update_execution.subprocess.run", return_value=completed):
+                result = run_post_install_verification(
+                    install_root=install_root,
+                    verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
+                )
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stderr, "warning output")
+
+    def test_post_install_verification_timeout_is_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "install"
+            install_root.mkdir(parents=True)
+            with patch(
+                "runtime.update_execution.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(
+                    cmd=["cmd", "/c", "dummy"],
+                    timeout=45,
+                ),
+            ):
+                with self.assertRaises(VerificationError):
+                    run_post_install_verification(
+                        install_root=install_root,
+                        verification_context=VerificationContext(os_name="windows", timeout_seconds=45),
+                    )
+
+
+class UpdaterRollbackTests(TestCase):
+    def test_verification_failure_restores_backup(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = _seed_install_root(root, version="0.4.1")
+            staged_root = _seed_staged_payload(root)
+            (staged_root / "runtime" / "version.txt").write_text("0.4.2", encoding="utf-8")
+            backup_root = root / "install-backup"
+
+            def failing_verify(*_args: object, **_kwargs: object) -> VerificationResult:
+                raise VerificationError("doctor failed")
+
+            result = apply_update_transaction(
+                install_root=install_root,
+                staged_root=staged_root,
+                backup_root=backup_root,
+                verification_context=VerificationContext(os_name="posix", timeout_seconds=45),
+                verification_runner=failing_verify,
+            )
+            self.assertFalse(result.ok)
+            self.assertTrue(result.rollback_performed)
+            self.assertEqual(
+                (install_root / "runtime" / "version.txt").read_text(encoding="utf-8"),
+                "0.4.1",
+            )
+
+    def test_plan_update_for_legacy_install_keeps_unknown_upgradeable(self) -> None:
+        manifest = _make_manifest(version="0.4.2")
+        discovery = InstallDiscovery(
+            install_root=Path("/tmp/legacy-install"),
+            status="legacy-install",
+            metadata=None,
+            version="unknown",
+            channel="unknown",
+            repo="legacy-install",
+        )
+        plan = plan_update_for_install(
+            install_discovery=discovery,
+            target_manifest=manifest,
+        )
+        self.assertEqual(plan.current_version, "unknown")
+        self.assertEqual(plan.latest_version, "0.4.2")
+        self.assertFalse(plan.already_up_to_date)
+
+
+class UpdaterRunTests(TestCase):
+    def test_run_update_validates_resolved_release_identity_before_asset_download(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = _seed_install_root(Path(tmp), version="0.4.1")
+            discovery = InstallDiscovery(
+                install_root=install_root,
+                status="installed",
+                metadata=None,
+                version="0.4.1",
+                channel="stable",
+                repo="owner/cc_collab",
+            )
+            release = ResolvedGitHubRelease(
+                repo="owner/cc_collab",
+                tag="v0.4.3",
+                release_id=123,
+                published_at="2026-04-13T12:00:00Z",
+            )
+            manifest_payload = {
+                "version": "0.4.2",
+                "channel": "stable",
+                "repo": "owner/cc_collab",
+                "tag": "v0.4.2",
+                "release_id": 123,
+                "published_at": "2026-04-13T12:00:00Z",
+                "compatibility": {"python_min": "3.9", "claude_required_flags": ["--print"]},
+                "assets": [
+                    {
+                        "platform": "windows-x64",
+                        "name": "ccollab-windows-x64.zip",
+                        "asset_id": 111,
+                        "size_bytes": 42,
+                        "sha256": "abc123",
+                    },
+                    {
+                        "platform": "macos-universal",
+                        "name": "ccollab-macos-universal.tar.gz",
+                        "asset_id": 112,
+                        "size_bytes": 84,
+                        "sha256": "def456",
+                    },
+                    {
+                        "platform": "linux-x64",
+                        "name": "ccollab-linux-x64.tar.gz",
+                        "asset_id": 113,
+                        "size_bytes": 126,
+                        "sha256": "ghi789",
+                    },
+                ],
+            }
+            fake_lock = type(
+                "FakeLock",
+                (),
+                {"release": lambda self: None},
+            )()
+            with patch("runtime.updater.get_active_runtime_root", return_value=install_root):
+                with patch("runtime.updater.discover_install_root", return_value=discovery):
+                    with patch("runtime.updater.ensure_healthy_launcher"):
+                        with patch("runtime.updater.acquire_update_lock", return_value=fake_lock):
+                            with patch("runtime.updater.resolve_latest_stable_release", return_value=release):
+                                with patch(
+                                    "runtime.updater.download_release_manifest",
+                                    return_value=manifest_payload,
+                                ):
+                                    with patch("runtime.updater.stage_release_asset") as stage_asset_mock:
+                                        with self.assertRaises(UpdateExecutionError):
+                                            run_update(env={}, os_name="posix")
+            stage_asset_mock.assert_not_called()

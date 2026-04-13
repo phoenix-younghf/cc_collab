@@ -17,11 +17,18 @@ from typing import Any, Callable
 
 from runtime.capabilities import detect_claude_capabilities, detect_python_capability
 from runtime.constants import CCOLLAB_RELEASE_REPOSITORY
-from runtime.release_manifest import ReleaseManifest, validate_release_identity
+from runtime.release_manifest import ReleaseManifest, parse_release_manifest, validate_release_identity
+from runtime import update_execution
 from runtime.versioning import (
+    InstallDiscovery,
+    InstallDiscoveryError,
+    MultipleInstallRootsError,
     build_install_metadata,
     canonical_install_root,
+    discover_install_root,
+    get_active_runtime_root,
     is_valid_install_payload,
+    resolve_platform_identifier,
     write_install_metadata,
 )
 
@@ -99,6 +106,89 @@ class CompatibilityError(UpdaterError):
 
 class InvalidPayloadError(UpdaterError):
     """Raised when a staged release payload is missing required install structure."""
+
+
+class BrokenLauncherError(UpdaterError):
+    """Raised when the installed launcher is missing or unhealthy."""
+
+
+class UpdateExecutionError(UpdaterError):
+    """Raised when an in-flight update fails after version context is known."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        current_version: str,
+        latest_version: str,
+        progress_messages: tuple[str, ...] = (),
+        rollback_succeeded: bool | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.current_version = current_version
+        self.latest_version = latest_version
+        self.progress_messages = progress_messages
+        self.rollback_succeeded = rollback_succeeded
+
+
+@dataclass(frozen=True)
+class UpdatePlan:
+    install_root: Path
+    current_version: str
+    latest_version: str
+    already_up_to_date: bool
+
+
+@dataclass(frozen=True)
+class UpdateResult:
+    status: str
+    current_version: str
+    latest_version: str
+    progress_messages: tuple[str, ...] = ()
+    verification_stdout: str = ""
+    verification_stderr: str = ""
+
+    @classmethod
+    def success(
+        cls,
+        *,
+        current_version: str,
+        latest_version: str,
+        progress_messages: tuple[str, ...] = (),
+        verification_stdout: str = "",
+        verification_stderr: str = "",
+    ) -> "UpdateResult":
+        return cls(
+            status="success",
+            current_version=current_version,
+            latest_version=latest_version,
+            progress_messages=progress_messages,
+            verification_stdout=verification_stdout,
+            verification_stderr=verification_stderr,
+        )
+
+    @classmethod
+    def noop(
+        cls,
+        *,
+        current_version: str,
+        latest_version: str,
+        progress_messages: tuple[str, ...] = (),
+    ) -> "UpdateResult":
+        return cls(
+            status="noop",
+            current_version=current_version,
+            latest_version=latest_version,
+            progress_messages=progress_messages,
+        )
+
+
+# Re-export execution dataclasses to keep updater as the public facade.
+VerificationContext = update_execution.VerificationContext
+VerificationResult = update_execution.VerificationResult
+VerificationError = update_execution.VerificationError
+WindowsSwapPlan = update_execution.WindowsSwapPlan
+UpdateTransactionResult = update_execution.UpdateTransactionResult
 
 
 @dataclass(frozen=True)
@@ -1033,3 +1123,290 @@ def download_platform_asset(
         asset_name=asset.name,
         runner=runner,
     )
+
+
+def current_working_directory() -> Path:
+    return update_execution.current_working_directory()
+
+
+def prepare_windows_swap(
+    *,
+    install_root: Path,
+    staged_root: Path,
+    backup_root: Path,
+    helper_executable: Path,
+) -> WindowsSwapPlan:
+    return update_execution.prepare_windows_swap(
+        install_root=install_root,
+        staged_root=staged_root,
+        backup_root=backup_root,
+        helper_executable=helper_executable,
+        current_workdir=current_working_directory(),
+    )
+
+
+def build_windows_verification_command(install_root: Path) -> list[str]:
+    return update_execution.build_windows_verification_command(install_root)
+
+
+def run_post_install_verification(
+    *,
+    install_root: Path,
+    verification_context: VerificationContext,
+    env: dict[str, str] | None = None,
+) -> VerificationResult:
+    return update_execution.run_post_install_verification(
+        install_root=install_root,
+        verification_context=verification_context,
+        env=env,
+    )
+
+
+def apply_update_transaction(
+    *,
+    install_root: Path,
+    staged_root: Path,
+    backup_root: Path,
+    verification_context: VerificationContext,
+    verification_runner: Callable[..., VerificationResult] | None = None,
+) -> UpdateTransactionResult:
+    runner = run_post_install_verification if verification_runner is None else verification_runner
+    return update_execution.apply_update_transaction(
+        install_root=install_root,
+        staged_root=staged_root,
+        backup_root=backup_root,
+        verification_context=verification_context,
+        verification_runner=runner,
+    )
+
+
+def _launcher_path_for_install(install_root: Path, *, os_name: str) -> Path:
+    if os_name == "nt":
+        return install_root / "bin" / "ccollab.cmd"
+    return install_root / "bin" / "ccollab"
+
+
+def ensure_healthy_launcher(install_root: Path, *, os_name: str) -> None:
+    launcher = _launcher_path_for_install(install_root, os_name=os_name)
+    if not launcher.is_file():
+        raise BrokenLauncherError(
+            "Launcher is missing or unhealthy. Reinstall ccollab to repair the launcher, then retry."
+        )
+    command = [str(launcher), "--help"]
+    if os_name == "nt":
+        command = ["cmd", "/c", str(launcher), "--help"]
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise BrokenLauncherError(
+            "Launcher is missing or unhealthy. Reinstall ccollab to repair the launcher, then retry."
+        ) from exc
+    if result.returncode != 0:
+        raise BrokenLauncherError(
+            "Launcher is missing or unhealthy. Reinstall ccollab to repair the launcher, then retry."
+        )
+
+
+def plan_update_for_install(
+    *,
+    install_discovery: InstallDiscovery,
+    target_manifest: ReleaseManifest,
+) -> UpdatePlan:
+    current_version = install_discovery.version or "unknown"
+    latest_version = target_manifest.version
+    already_up_to_date = (
+        current_version != "unknown"
+        and current_version == latest_version
+    )
+    return UpdatePlan(
+        install_root=canonical_install_root(install_discovery.install_root),
+        current_version=current_version,
+        latest_version=latest_version,
+        already_up_to_date=already_up_to_date,
+    )
+
+
+def _resolved_staged_install_root(extracted_root: Path) -> Path:
+    if is_valid_install_payload(extracted_root):
+        return extracted_root
+    children = [entry for entry in extracted_root.iterdir() if entry.is_dir()]
+    if len(children) == 1 and is_valid_install_payload(children[0]):
+        return children[0]
+    return extracted_root
+
+
+def _safe_rmtree(path: Path) -> None:
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def _raise_update_execution_error(
+    *,
+    message: str,
+    plan: UpdatePlan,
+    progress_messages: list[str],
+    rollback_succeeded: bool | None = None,
+) -> None:
+    raise UpdateExecutionError(
+        message,
+        current_version=plan.current_version,
+        latest_version=plan.latest_version,
+        progress_messages=tuple(progress_messages),
+        rollback_succeeded=rollback_succeeded,
+    )
+
+
+def run_update(
+    *,
+    env: dict[str, str] | None = None,
+    os_name: str | None = None,
+    repo: str = CCOLLAB_RELEASE_REPOSITORY,
+) -> UpdateResult:
+    runtime_env = dict(os.environ if env is None else env)
+    runtime_os = os_name or os.name
+    active_runtime_root = get_active_runtime_root(__file__)
+    discovery = discover_install_root(
+        active_runtime_root=active_runtime_root,
+        env=runtime_env,
+        os_name=runtime_os,
+        reject_conflicting_roots=True,
+    )
+    install_root = canonical_install_root(discovery.install_root)
+    ensure_healthy_launcher(install_root, os_name=runtime_os)
+
+    lock = acquire_update_lock(install_root)
+    work_area: UpdateWorkArea | None = None
+    plan: UpdatePlan | None = None
+    progress_messages: list[str] = []
+    try:
+        release = resolve_latest_stable_release(repo)
+        manifest_payload = download_release_manifest(
+            repo=release.repo,
+            release_id=release.release_id,
+            asset_name="ccollab-manifest.json",
+        )
+        manifest = parse_release_manifest(manifest_payload)
+        plan = plan_update_for_install(
+            install_discovery=discovery,
+            target_manifest=manifest,
+        )
+        _validate_release_binding(release, manifest)
+        run_compatibility_preflight(manifest, os_name=runtime_os)
+        if plan.already_up_to_date:
+            return UpdateResult.noop(
+                current_version=plan.current_version,
+                latest_version=plan.latest_version,
+            )
+
+        work_area = create_update_work_area(install_root)
+        platform = resolve_platform_identifier()
+        asset = manifest.asset_for(platform)
+        progress_messages.append(f"Downloading {asset.name}...")
+        archive_path = stage_release_asset(
+            install_root=install_root,
+            repo=release.repo,
+            release_id=release.release_id,
+            asset_id=asset.asset_id,
+            asset_name=asset.name,
+            work_area=work_area,
+        )
+        progress_messages.append("Verifying checksum...")
+        verify_downloaded_archive(
+            archive_path=archive_path,
+            expected_sha256=asset.sha256,
+            expected_size=asset.size_bytes,
+        )
+        extracted_root = work_area.staging_root / "extracted"
+        extract_release_archive(archive_path, extracted_root)
+        staged_install_root = _resolved_staged_install_root(extracted_root)
+        validate_staged_payload(staged_install_root)
+        write_staged_install_metadata(
+            staged_install_root=staged_install_root,
+            manifest=manifest,
+            asset_name=asset.name,
+            asset_sha256=asset.sha256,
+        )
+
+        verification_context = VerificationContext(
+            os_name="windows" if runtime_os == "nt" else "posix",
+            timeout_seconds=45,
+        )
+        progress_messages.append("Installing update...")
+        if runtime_os == "nt":
+            # Persist swap intent whenever the updater is launched from an unsafe directory.
+            prepare_windows_swap(
+                install_root=install_root,
+                staged_root=staged_install_root,
+                backup_root=work_area.backup_root,
+                helper_executable=install_root / "runtime" / "update_execution.py",
+            )
+        transaction = apply_update_transaction(
+            install_root=install_root,
+            staged_root=staged_install_root,
+            backup_root=work_area.backup_root,
+            verification_context=verification_context,
+        )
+        progress_messages.append("Running post-install verification...")
+        if not transaction.ok:
+            detail = transaction.error or "post-install verification failed"
+            if transaction.rollback_performed and transaction.rollback_succeeded:
+                _raise_update_execution_error(
+                    message=detail,
+                    plan=plan,
+                    progress_messages=progress_messages,
+                    rollback_succeeded=True,
+                )
+            if transaction.rollback_performed and transaction.rollback_succeeded is False:
+                _raise_update_execution_error(
+                    message=detail,
+                    plan=plan,
+                    progress_messages=progress_messages,
+                    rollback_succeeded=False,
+                )
+            _raise_update_execution_error(
+                message=detail,
+                plan=plan,
+                progress_messages=progress_messages,
+            )
+
+        verification = transaction.verification
+        return UpdateResult.success(
+            current_version=plan.current_version,
+            latest_version=plan.latest_version,
+            progress_messages=tuple(progress_messages),
+            verification_stdout="" if verification is None else verification.stdout,
+            verification_stderr="" if verification is None else verification.stderr,
+        )
+    except (
+        BrokenLauncherError,
+        CompatibilityError,
+        GhAuthenticationError,
+        GhPrerequisiteError,
+        InstallDiscoveryError,
+        MultipleInstallRootsError,
+        RepoAccessError,
+        UpdateExecutionError,
+        UpdateLockedError,
+    ):
+        raise
+    except UpdaterError as exc:
+        if plan is None:
+            raise
+        _raise_update_execution_error(
+            message=str(exc),
+            plan=plan,
+            progress_messages=progress_messages,
+        )
+    finally:
+        if work_area is not None:
+            _safe_rmtree(work_area.staging_root)
+            if work_area.backup_root.exists():
+                _safe_rmtree(work_area.backup_root)
+        lock.release()
