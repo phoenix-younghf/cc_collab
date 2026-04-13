@@ -41,6 +41,7 @@ from runtime.versioning import (
     InstallDiscoveryError,
     MultipleInstallRootsError,
     discover_install_root,
+    get_active_runtime_root,
 )
 from runtime.workspace_guard import (
     capture_baseline,
@@ -980,7 +981,7 @@ def _format_version_source(repo: str) -> str:
 def handle_version() -> int:
     try:
         discovery = discover_install_root(
-            active_runtime_root=os.environ.get("CCOLLAB_RUNTIME_ROOT"),
+            active_runtime_root=get_active_runtime_root(__file__),
             env=os.environ,
             os_name=os.name,
             reject_conflicting_roots=True,

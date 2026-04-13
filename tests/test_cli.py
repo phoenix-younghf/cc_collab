@@ -279,6 +279,47 @@ class CliSmokeTests(TestCase):
 
 
 class CliVersionTests(TestCase):
+    def test_version_discovers_active_runtime_root_independently_from_override(self) -> None:
+        with TemporaryDirectory() as tmp:
+            active_root = Path(tmp) / "active-install"
+            (active_root / "runtime").mkdir(parents=True)
+            (active_root / "bin").mkdir()
+            discovery = InstallDiscovery(
+                install_root=active_root,
+                status="installed",
+                metadata=None,
+                version="0.4.2",
+                channel="stable",
+                repo="owner/cc_collab",
+            )
+            captured: dict[str, object] = {}
+
+            def fake_discover_install_root(**kwargs: object) -> InstallDiscovery:
+                captured.update(kwargs)
+                captured["env"] = dict(kwargs["env"])  # type: ignore[index]
+                return discovery
+
+            with patch.dict(
+                os.environ,
+                {"CCOLLAB_RUNTIME_ROOT": "/tmp/override-install"},
+                clear=False,
+            ):
+                with patch("runtime.cli.__file__", str(active_root / "runtime" / "cli.py")):
+                    with patch(
+                        "runtime.cli.discover_install_root",
+                        side_effect=fake_discover_install_root,
+                    ):
+                        stdout = io.StringIO()
+                        with redirect_stdout(stdout):
+                            exit_code = main(["version"])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(captured["active_runtime_root"], active_root)
+            self.assertEqual(
+                captured["env"]["CCOLLAB_RUNTIME_ROOT"],  # type: ignore[index]
+                "/tmp/override-install",
+            )
+
     def test_version_reports_installed_metadata(self) -> None:
         with TemporaryDirectory() as tmp:
             install_root = Path(tmp) / "install"

@@ -96,6 +96,14 @@ def _normalize_root(candidate: str | Path | None) -> Path | None:
     return Path(value).expanduser()
 
 
+def get_active_runtime_root(module_file: str | Path | None = None) -> Path | None:
+    module_path = Path(__file__ if module_file is None else module_file).expanduser()
+    install_root = module_path.parent.parent
+    if not is_valid_install_payload(install_root):
+        return None
+    return install_root
+
+
 def _default_install_root(*, env: dict[str, str], os_name: str) -> Path:
     return Path(resolve_paths(env=env, os_name=os_name).install_root)
 
@@ -119,17 +127,6 @@ def _installed_discovery(install_root: Path, metadata: InstallMetadata) -> Insta
         version=metadata.version,
         channel=metadata.channel,
         repo=metadata.repo,
-    )
-
-
-def _active_runtime_discovery(install_root: Path) -> InstallDiscovery:
-    return InstallDiscovery(
-        install_root=install_root,
-        status="installed",
-        metadata=None,
-        version="unknown",
-        channel="unknown",
-        repo="legacy-install",
     )
 
 
@@ -173,10 +170,8 @@ def discover_install_root(
             "No valid ccollab install was found. Reinstall ccollab using the normal install flow, then retry."
         )
 
-    selected_source, install_root = valid_pairs[0]
+    _, install_root = valid_pairs[0]
     metadata = read_install_metadata(install_root)
     if metadata is None:
-        if selected_source == "active":
-            return _active_runtime_discovery(install_root)
         return _legacy_discovery(install_root)
     return _installed_discovery(install_root, metadata)
