@@ -44,6 +44,8 @@ REQUIRED_CLAUDE_FLAGS = (
 )
 
 DEFAULT_CLAUDE_MODEL = "claude-opus-4-6"
+CCOLLAB_PROJECT_VERSION = "0.4.2"
+INSTALL_METADATA_FILENAME = "install-metadata.json"
 
 CLOSEOUT_MAPPING = {
     "read-only": {"success": {"archived"}, "failure": {"inspection-required"}},

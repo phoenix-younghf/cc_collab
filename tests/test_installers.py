@@ -65,6 +65,15 @@ exit {0 if succeeds else 1}
     return log_path
 
 
+def _make_missing_brew_shim(bin_dir: Path) -> None:
+    script = f"""#!{BASH}
+set -euo pipefail
+echo "missing brew" >&2
+exit 127
+"""
+    _write_executable(bin_dir / "brew", script)
+
+
 def _make_missing_python_shims(bin_dir: Path) -> None:
     script = f"""#!{BASH}
 set -euo pipefail
@@ -142,6 +151,8 @@ def _run_install_all_sh(
         _make_missing_python_shims(bin_dir)
     if fake_brew:
         _make_fake_brew(bin_dir, brew_succeeds)
+    else:
+        _make_missing_brew_shim(bin_dir)
     env = {
         "HOME": str(home),
         "CODEX_HOME": str(home / ".codex"),
@@ -352,6 +363,21 @@ class InstallerTests(TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((source_root / ".git").exists())
             self.assertTrue((install_root / "runtime" / "cli.py").exists())
+
+    def test_install_all_sh_writes_install_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result = run_install_script_with_fake_python(temp_root=tmp)
+            install_root = _platform_install_root(Path(tmp) / "home")
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue((install_root / "install-metadata.json").exists())
+
+    @skipUnless(shutil.which("pwsh"), "pwsh required for PowerShell bootstrap behavior")
+    def test_install_all_ps1_writes_install_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result = run_install_script_with_fake_windows_python(temp_root=tmp)
+            install_root = Path(tmp) / "home" / "AppData" / "Local" / "cc_collab" / "install"
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue((install_root / "install-metadata.json").exists())
 
     def test_installed_unix_launcher_forwards_arguments_from_install_root(self) -> None:
         with TemporaryDirectory() as tmp:

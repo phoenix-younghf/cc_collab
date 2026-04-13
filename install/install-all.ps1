@@ -84,6 +84,33 @@ function Copy-Payload {
     }
 }
 
+function Write-InstallMetadata {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot
+    )
+
+    $constantsPath = Join-Path $InstallRoot "runtime\constants.py"
+    $constantsText = Get-Content -Path $constantsPath -Raw
+    $match = [regex]::Match($constantsText, '^CCOLLAB_PROJECT_VERSION = "(?<version>[^"]+)"$', [System.Text.RegularExpressions.RegexOptions]::Multiline)
+    if (-not $match.Success) {
+        throw "Unable to resolve ccollab project version from installed payload."
+    }
+    $payload = [ordered]@{
+        version = $match.Groups["version"].Value
+        channel = "stable"
+        repo = "owner/cc_collab"
+        platform = "windows-x64"
+        installed_at = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+        asset_name = "unknown"
+        asset_sha256 = "unknown"
+        install_root = $InstallRoot
+    }
+    $metadataPath = Join-Path $InstallRoot "install-metadata.json"
+    $json = $payload | ConvertTo-Json
+    Set-Content -Path $metadataPath -Value $json -Encoding utf8
+}
+
 $PythonCommand = Find-PythonCommand
 if (-not $PythonCommand) {
     Install-Python
@@ -96,6 +123,7 @@ if (-not $PythonCommand) {
 $InstallRoot = Get-InstallRoot
 $env:CCOLLAB_RUNTIME_ROOT = $InstallRoot
 Copy-Payload -InstallRoot $InstallRoot
+Write-InstallMetadata -InstallRoot $InstallRoot
 
 & (Join-Path $Root "install\install-skill.ps1")
 & (Join-Path $Root "install\install-bin.ps1")

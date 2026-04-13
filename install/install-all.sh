@@ -54,6 +54,40 @@ copy_payload() {
   cp "$ROOT/AGENTS.md" "$install_root/AGENTS.md"
 }
 
+write_install_metadata() {
+  local install_root="$1"
+  local version
+  version="$(sed -n 's/^CCOLLAB_PROJECT_VERSION = "\(.*\)"$/\1/p' "$install_root/runtime/constants.py")"
+  if [[ -z "$version" ]]; then
+    echo "Unable to resolve ccollab project version from installed payload." >&2
+    return 1
+  fi
+
+  local platform_id
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    platform_id="macos-universal"
+  else
+    platform_id="linux-x64"
+  fi
+
+  local installed_at
+  installed_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  local escaped_install_root
+  escaped_install_root="$(printf '%s' "$install_root" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+  cat >"$install_root/install-metadata.json" <<EOF
+{
+  "version": "$version",
+  "channel": "stable",
+  "repo": "owner/cc_collab",
+  "platform": "$platform_id",
+  "installed_at": "$installed_at",
+  "asset_name": "unknown",
+  "asset_sha256": "unknown",
+  "install_root": "$escaped_install_root"
+}
+EOF
+}
+
 refresh_session_path() {
   local bin_dir="$HOME/.local/bin"
   mkdir -p "$bin_dir"
@@ -89,6 +123,7 @@ fi
 INSTALL_ROOT="$(resolve_install_root)"
 export CCOLLAB_RUNTIME_ROOT="$INSTALL_ROOT"
 copy_payload "$INSTALL_ROOT"
+write_install_metadata "$INSTALL_ROOT"
 refresh_session_path
 "$ROOT/install/install-skill.sh"
 "$ROOT/install/install-bin.sh"

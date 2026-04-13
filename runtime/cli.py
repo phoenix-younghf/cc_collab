@@ -37,6 +37,11 @@ from runtime.result_parser import parse_result
 from runtime.result_renderer import render_result_markdown
 from runtime.schema_loader import load_schema_text
 from runtime.validators import ValidationError, validate_request, validate_result
+from runtime.versioning import (
+    InstallDiscoveryError,
+    MultipleInstallRootsError,
+    discover_install_root,
+)
 from runtime.workspace_guard import (
     capture_baseline,
     capture_git_head,
@@ -88,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparser.add_argument("--task-root")
 
     subparsers.add_parser("doctor")
+    subparsers.add_parser("version")
     return parser
 
 
@@ -965,6 +971,34 @@ def handle_doctor() -> int:
     return 0 if report.ok else 1
 
 
+def _format_version_source(repo: str) -> str:
+    if repo == "legacy-install" or repo.startswith("github.com/"):
+        return repo
+    return f"github.com/{repo}"
+
+
+def handle_version() -> int:
+    try:
+        discovery = discover_install_root(
+            active_runtime_root=os.environ.get("CCOLLAB_RUNTIME_ROOT"),
+            env=os.environ,
+            os_name=os.name,
+            reject_conflicting_roots=True,
+        )
+    except MultipleInstallRootsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except InstallDiscoveryError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    print(f"ccollab {discovery.version}")
+    print(f"install root: {discovery.install_root}")
+    print(f"source: {_format_version_source(discovery.repo)}")
+    print(f"channel: {discovery.channel}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -979,6 +1013,8 @@ def main(argv: list[str] | None = None) -> int:
             return handle_cleanup(args)
         if args.command == "doctor":
             return handle_doctor()
+        if args.command == "version":
+            return handle_version()
         parser.print_help()
         return 0
     except (FileNotFoundError, ValidationError, ValueError) as exc:

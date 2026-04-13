@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -21,6 +21,13 @@ from runtime.capabilities import (
 )
 from runtime.cli import main
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
+from runtime.versioning import (
+    InstallDiscovery,
+    InstallMetadata,
+    MultipleInstallRootsError,
+    read_install_metadata,
+    write_install_metadata,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -269,6 +276,70 @@ class CliSmokeTests(TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("doctor", result.stdout)
+
+
+class CliVersionTests(TestCase):
+    def test_version_reports_installed_metadata(self) -> None:
+        with TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "install"
+            install_root.mkdir()
+            write_install_metadata(
+                install_root,
+                InstallMetadata(
+                    version="0.4.2",
+                    channel="stable",
+                    repo="owner/cc_collab",
+                    platform="linux-x64",
+                    installed_at="2026-04-13T12:34:56Z",
+                    asset_name="ccollab-linux-x64.tar.gz",
+                    asset_sha256="abc123",
+                    install_root=str(install_root),
+                ),
+            )
+            discovery = InstallDiscovery(
+                install_root=install_root,
+                status="installed",
+                metadata=read_install_metadata(install_root),
+                version="0.4.2",
+                channel="stable",
+                repo="owner/cc_collab",
+            )
+            with patch("runtime.cli.discover_install_root", return_value=discovery):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    exit_code = main(["version"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("ccollab 0.4.2", stdout.getvalue())
+
+    def test_version_reports_legacy_install(self) -> None:
+        discovery = InstallDiscovery(
+            install_root=Path("/tmp/legacy-install"),
+            status="legacy-install",
+            metadata=None,
+            version="unknown",
+            channel="unknown",
+            repo="legacy-install",
+        )
+        with patch("runtime.cli.discover_install_root", return_value=discovery):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(["version"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ccollab unknown", stdout.getvalue())
+        self.assertIn("legacy-install", stdout.getvalue())
+
+    def test_version_reports_multiple_install_remediation(self) -> None:
+        with patch(
+            "runtime.cli.discover_install_root",
+            side_effect=MultipleInstallRootsError(
+                "Set CCOLLAB_RUNTIME_ROOT to the intended install and retry."
+            ),
+        ):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                exit_code = main(["version"])
+        self.assertNotEqual(exit_code, 0)
+        self.assertIn("CCOLLAB_RUNTIME_ROOT", stderr.getvalue())
 
 
 class CliIntegrationTests(TestCase):
