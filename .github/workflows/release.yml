@@ -1,0 +1,112 @@
+name: Draft Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  draft-release:
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+      DIST_DIR: dist
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build platform archives and manifest input
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          python3 scripts/build_release_payload.py build \
+            --output-dir "${DIST_DIR}" \
+            --version "${VERSION}" \
+            --repo "${RELEASE_REPO}"
+
+      - name: Resolve release as draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" >/dev/null 2>&1; then
+            gh release create "${RELEASE_TAG}" \
+              --repo "${RELEASE_REPO}" \
+              --title "${RELEASE_TAG}" \
+              --notes "Draft release for ${RELEASE_TAG}" \
+              --draft
+          fi
+          release_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json id --jq '.id')"
+          gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
+
+      - name: Upload platform archives first
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${DIST_DIR}/ccollab-windows-x64.zip" \
+            "${DIST_DIR}/ccollab-macos-universal.tar.gz" \
+            "${DIST_DIR}/ccollab-linux-x64.tar.gz" \
+            --repo "${RELEASE_REPO}" \
+            --clobber
+
+      - name: Capture release and asset IDs
+        id: release_identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json id --jq '.id')"
+          windows_asset_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json assets --jq '.assets[] | select(.name == "ccollab-windows-x64.zip") | .id')"
+          macos_asset_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json assets --jq '.assets[] | select(.name == "ccollab-macos-universal.tar.gz") | .id')"
+          linux_asset_id="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json assets --jq '.assets[] | select(.name == "ccollab-linux-x64.tar.gz") | .id')"
+          {
+            echo "release_id=${release_id}"
+            echo "windows_asset_id=${windows_asset_id}"
+            echo "macos_asset_id=${macos_asset_id}"
+            echo "linux_asset_id=${linux_asset_id}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Generate final ccollab-manifest.json
+        run: |
+          set -euo pipefail
+          python3 scripts/build_release_payload.py write-manifest \
+            --manifest-input "${DIST_DIR}/ccollab-manifest-input.json" \
+            --output-path "${DIST_DIR}/ccollab-manifest.json" \
+            --release-id "${{ steps.release_identity.outputs.release_id }}" \
+            --windows-asset-id "${{ steps.release_identity.outputs.windows_asset_id }}" \
+            --macos-asset-id "${{ steps.release_identity.outputs.macos_asset_id }}" \
+            --linux-asset-id "${{ steps.release_identity.outputs.linux_asset_id }}"
+
+      - name: Upload final manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            "${DIST_DIR}/ccollab-manifest.json" \
+            --repo "${RELEASE_REPO}" \
+            --clobber
+
+      - name: Keep release in draft state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          release_id="${{ steps.release_identity.outputs.release_id }}"
+          gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
+          is_draft="$(gh release view "${RELEASE_TAG}" --repo "${RELEASE_REPO}" --json isDraft --jq '.isDraft')"
+          if [ "${is_draft}" != "true" ]; then
+            echo "Release ${RELEASE_TAG} must remain draft for manual Windows validation."
+            exit 1
+          fi
