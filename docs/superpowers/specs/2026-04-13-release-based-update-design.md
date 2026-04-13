@@ -384,6 +384,7 @@ Verification requirements:
 - success means exit code `0` within a bounded timeout
 - stdout and stderr are recorded in the update log
 - stderr alone does not fail verification if the exit code is `0`
+- Windows verification must preserve argument-vector execution semantics end-to-end. Reconstructing this command as a shell string is not allowed in v1, including for helper-process verification.
 
 Using the shell PATH launcher as the rollback gate is not allowed in v1.
 
@@ -409,6 +410,7 @@ Using the shell PATH launcher as the rollback gate is not allowed in v1.
   - checksum verification
   - install-root discovery and canonicalization
   - update locking
+  - lock ownership transfer during helper handoff
   - compatibility preflight
   - staging, replacement, and rollback
   - helper-process handoff when direct swap is unsafe
@@ -460,6 +462,8 @@ Using the shell PATH launcher as the rollback gate is not allowed in v1.
   - same-volume staging enforcement
   - update lock contention
   - canonical install-root locking
+  - lock ownership transfer during Windows helper handoff
+  - stale-lock recovery blocked while helper handoff is active
   - compatibility preflight failure
   - rollback after post-install failure
   - helper-process handoff when direct rename is unsafe
@@ -472,6 +476,8 @@ Using the shell PATH launcher as the rollback gate is not allowed in v1.
   - `ccollab update`
   - already-up-to-date path
   - legacy-install path
+  - broken-launcher remediation path
+  - multiple-install remediation path
 
 ### Installer Tests
 
@@ -485,6 +491,22 @@ Using the shell PATH launcher as the rollback gate is not allowed in v1.
 - validate manifest contents
 - validate release ID, tag, and asset identity fields
 - confirm archive names match the client platform mapping
+
+### Verification Execution Tests
+
+- validate that the Windows post-install verification path is executed as an argument vector, not a reconstructed shell string
+- validate that helper-process verification preserves argument-vector semantics when install paths contain spaces
+
+### Manual Windows Validation
+
+Before a release is considered shippable, manual native Windows validation must confirm:
+
+- update succeeds from a directory outside the install root
+- update succeeds when invoked from inside the install root
+- helper handoff completes without leaving a stale lock
+- rollback succeeds after an injected post-install verification failure
+- install paths containing spaces still pass the verification gate
+- the installed launcher still resolves from a fresh PowerShell and CMD session after update
 
 All GitHub integration tests should use fake `gh` shims. The test suite should not require real network access or real GitHub credentials.
 
@@ -511,6 +533,15 @@ Mitigation:
 - avoid PATH-based in-place mutation assumptions
 - use rename-only same-volume swap rules
 - allow helper-process handoff when the active process cannot safely rename the target tree
+- make native Windows end-to-end validation a release gate, not an optional follow-up
+
+### Risk: implementation drifts from the verification command contract
+
+Mitigation:
+
+- define the Windows verification command as an argument vector in the spec
+- add automated tests that fail if code reconstructs a shell string
+- include path-with-spaces coverage in both automated and manual validation
 
 ### Risk: legacy installs produce confusing UX
 
@@ -537,6 +568,7 @@ Mitigation:
 4. Add release packaging script and CI workflow.
 5. Document install vs update semantics for Windows, macOS, and Linux.
 6. Validate end-to-end with fake GitHub integration in tests and manual Windows verification.
+7. Treat native Windows validation as a release gate for any version that changes updater, launcher, or verification behavior.
 
 ## Success Criteria
 
@@ -546,3 +578,5 @@ Mitigation:
 - The updater selects the correct latest stable release deterministically by semver and rejects mismatched release metadata.
 - A failed update leaves the previous installation intact.
 - `ccollab version` reports meaningful installed-version data, including legacy fallback.
+- Automated coverage verifies helper handoff lock transfer and Windows verification argument-vector semantics.
+- Native Windows manual validation passes for update, rollback, stale-lock recovery, and paths containing spaces.
