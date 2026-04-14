@@ -40,7 +40,10 @@ jobs:
           set -euo pipefail
           release_api_path="repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
           resolve_release_id() {
-            gh api "${release_api_path}" --jq '.id' 2>/dev/null || true
+            candidate="$(gh api "${release_api_path}" --jq '.id' 2>/dev/null || true)"
+            if [[ "${candidate}" =~ ^[0-9]+$ ]]; then
+              printf '%s\n' "${candidate}"
+            fi
           }
           release_id="$(resolve_release_id)"
           if [ -z "${release_id}" ]; then

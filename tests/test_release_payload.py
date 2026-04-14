@@ -184,3 +184,4 @@ class ReleasePayloadTests(TestCase):
         self.assertIn('gh release create "${RELEASE_TAG}"', workflow)
         self.assertIn("for attempt in 1 2 3 4 5", workflow)
         self.assertIn("sleep 2", workflow)
+        self.assertIn('[[ "${candidate}" =~ ^[0-9]+$ ]]', workflow)
