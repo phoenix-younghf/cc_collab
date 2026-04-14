@@ -331,3 +331,25 @@ class ReleaseWorkflowHelperTests(TestCase):
                     ("get_release_by_tag", "owner/cc_collab", "v0.4.5"),
                 ],
             )
+
+    def test_build_release_asset_outputs_maps_uploaded_assets(self) -> None:
+        module = _load_release_workflow_module()
+
+        outputs = module.build_release_asset_outputs(
+            release_id=123,
+            assets=[
+                {"id": 111, "name": "ccollab-windows-x64.zip"},
+                {"id": 112, "name": "ccollab-macos-universal.tar.gz"},
+                {"id": 113, "name": "ccollab-linux-x64.tar.gz"},
+            ],
+        )
+
+        self.assertEqual(
+            outputs,
+            {
+                "release_id": "123",
+                "windows_asset_id": "111",
+                "macos_asset_id": "112",
+                "linux_asset_id": "113",
+            },
+        )

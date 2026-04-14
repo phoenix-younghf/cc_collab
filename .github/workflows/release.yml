@@ -45,6 +45,7 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
 
       - name: Upload platform archives first
+        id: release_identity
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -53,20 +54,10 @@ jobs:
             --repo "${RELEASE_REPO}" \
             --release-id "${{ steps.ensure_release.outputs.release_id }}" \
             --clobber \
+            --github-output "${GITHUB_OUTPUT}" \
             "${DIST_DIR}/ccollab-windows-x64.zip" \
             "${DIST_DIR}/ccollab-macos-universal.tar.gz" \
             "${DIST_DIR}/ccollab-linux-x64.tar.gz"
-
-      - name: Capture release and asset IDs
-        id: release_identity
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          python3 scripts/release_workflow.py capture-release-assets \
-            --repo "${RELEASE_REPO}" \
-            --tag "${RELEASE_TAG}" \
-            --github-output "${GITHUB_OUTPUT}"
 
       - name: Generate final ccollab-manifest.json
         run: |

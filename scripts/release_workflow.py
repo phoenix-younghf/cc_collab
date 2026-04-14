@@ -238,6 +238,22 @@ def capture_release_assets(
     return outputs
 
 
+def build_release_asset_outputs(*, release_id: int, assets: Iterable[dict[str, Any]]) -> dict[str, str]:
+    outputs = {"release_id": str(release_id)}
+    asset_id_by_name = {
+        _require_string(asset, "name", context="release asset"): str(
+            _require_int(asset, "id", context="release asset")
+        )
+        for asset in assets
+    }
+    for asset_name, output_name in ASSET_OUTPUT_NAMES.items():
+        asset_id = asset_id_by_name.get(asset_name)
+        if asset_id is None:
+            raise RuntimeError(f"uploaded assets are missing required asset {asset_name!r}")
+        outputs[output_name] = asset_id
+    return outputs
+
+
 def write_github_outputs(path: Path, outputs: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -258,19 +274,15 @@ def _iter_assets(release: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _build_release_outputs(release: dict[str, Any]) -> dict[str, str] | None:
-    outputs = {"release_id": str(_require_int(release, "id", context="release"))}
-    asset_id_by_name = {
-        _require_string(asset, "name", context="release asset"): str(
-            _require_int(asset, "id", context="release asset")
+    try:
+        return build_release_asset_outputs(
+            release_id=_require_int(release, "id", context="release"),
+            assets=_iter_assets(release),
         )
-        for asset in _iter_assets(release)
-    }
-    for asset_name, output_name in ASSET_OUTPUT_NAMES.items():
-        asset_id = asset_id_by_name.get(asset_name)
-        if asset_id is None:
+    except RuntimeError as exc:
+        if "uploaded assets are missing required asset" in str(exc):
             return None
-        outputs[output_name] = asset_id
-    return outputs
+        raise
 
 
 def _retry_get_release_by_tag(
@@ -317,6 +329,7 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_parser.add_argument("--repo", required=True)
     upload_parser.add_argument("--release-id", type=int, required=True)
     upload_parser.add_argument("--clobber", action="store_true")
+    upload_parser.add_argument("--github-output", type=Path)
     upload_parser.add_argument("asset_paths", nargs="+", type=Path)
 
     capture_parser = subparsers.add_parser(
@@ -362,6 +375,11 @@ def main(argv: list[str] | None = None) -> int:
                 asset_paths=args.asset_paths,
                 clobber=bool(args.clobber),
             )
+            if args.github_output is not None:
+                write_github_outputs(
+                    args.github_output,
+                    build_release_asset_outputs(release_id=args.release_id, assets=uploaded_assets),
+                )
             print("uploaded: " + ", ".join(_require_string(asset, "name", context="uploaded asset") for asset in uploaded_assets))
             return 0
 
