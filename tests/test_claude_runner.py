@@ -73,6 +73,20 @@ class ClaudeRunnerTests(TestCase):
         self.assertEqual(stdout, '{"status":"completed"}')
         self.assertEqual(stderr, "")
 
+    @patch("runtime.claude_runner.subprocess.Popen")
+    def test_run_claude_raises_runtime_error_on_nonzero_exit(self, mock_popen) -> None:
+        process = _FakeProcess(
+            stdout_text="",
+            stderr_text="claude failed badly",
+            poll_sequence=[1],
+        )
+        mock_popen.return_value = process
+
+        with self.assertRaises(RuntimeError) as ctx:
+            run_claude(["claude", "-p"])
+
+        self.assertEqual(str(ctx.exception), "claude failed badly")
+
     @patch("runtime.claude_runner.time.sleep", return_value=None)
     @patch("runtime.claude_runner._terminate_process_tree")
     @patch("runtime.claude_runner.subprocess.Popen")
