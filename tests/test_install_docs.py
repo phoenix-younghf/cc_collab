@@ -59,11 +59,13 @@ class InstallDocsTests(TestCase):
         self.assertIn("filesystem-only", skill)
         self.assertIn("Git-aware", skill)
 
-    def test_readme_lists_explicit_windows_smoke_commands(self) -> None:
+    def test_readme_scopes_smoke_templates_to_debugging_only(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")
-        self.assertIn("Copy-Item .\\examples\\filesystem-only-smoke-task.json", readme)
-        self.assertIn("git init $env:TEMP\\ccollab-git-smoke", readme)
-        self.assertIn("cmd /c ccollab run", readme)
+        self.assertIn("debugging templates", readme.lower())
+        self.assertIn("not part of the default install or release validation path", readme)
+        self.assertIn("ccollab version", readme)
+        self.assertIn("ccollab doctor", readme)
+        self.assertIn("ccollab update", readme)
 
     def test_smoke_templates_use_bounded_claude_settings(self) -> None:
         filesystem = Path("examples/filesystem-only-smoke-task.json").read_text(encoding="utf-8")
@@ -81,7 +83,8 @@ class InstallDocsTests(TestCase):
     def test_readme_lists_manual_validation_prerequisites(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")
         self.assertIn("python3 -m unittest tests.test_cli -v", readme)
-        self.assertIn("cmd /c ccollab doctor", readme)
+        self.assertIn("Get-Command ccollab", readme)
+        self.assertIn("ccollab doctor", readme)
 
     def test_readme_uses_bom_safe_windows_json_rewrite(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")
@@ -128,3 +131,9 @@ class InstallDocsTests(TestCase):
         self.assertIn("ccollab version", checklist)
         self.assertIn("ccollab update", checklist)
         self.assertIn("& $HOME\\.local\\bin\\ccollab.cmd update", checklist)
+
+    def test_release_checklist_does_not_require_manual_run_smoke(self) -> None:
+        checklist = Path("docs/release/ccollab-update-checklist.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("does not require manual `ccollab run` smoke", checklist)

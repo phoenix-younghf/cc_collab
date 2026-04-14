@@ -2,6 +2,8 @@
 
 Use this checklist before publishing a draft release. Keep the release as draft until every item is complete.
 
+This release gate does not require manual `ccollab run` smoke. Treat `examples/*-smoke-task.json` as debugging templates only, and use the checks below as the release readiness gate.
+
 ## Native Windows Update Validation
 
 - [ ] Validate native Windows update from outside the install root in PowerShell.

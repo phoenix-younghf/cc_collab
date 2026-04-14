@@ -102,15 +102,17 @@ Git is optional.
 
 If `Python` is missing, the installer attempts platform-native bootstrap first. If `claude` is missing or missing required flags, `doctor` and `run` fail early with guidance, but the installer still completes.
 
-## Smoke Templates
+## Debugging Templates
 
-The files under `examples/` are templates, not drop-in runnable requests.
+The files under `examples/` are debugging templates, not drop-in runnable requests and not part of the default install or release validation path.
 
 - `examples/filesystem-only-smoke-task.json`
 - `examples/git-aware-smoke-task.json`
 
+Use `ccollab version`, `ccollab doctor`, `ccollab update`, and the Windows release checklist as the default validation path. Reach for the smoke templates only when you are actively debugging `ccollab run` or Claude structured-output behavior.
+
 Rewrite each template's `workdir` before running it.
-Both shipped smoke templates pin Claude to `sonnet` and set `claude_role.timeout_seconds` to `60` so manual smoke validation fails boundedly instead of hanging indefinitely.
+Both shipped smoke templates pin Claude to `sonnet` and set `claude_role.timeout_seconds` to `60` so debugging stays bounded instead of hanging indefinitely.
 
 Local validation sequence on macOS / Linux:
 
@@ -120,7 +122,7 @@ python3 -m unittest tests.test_cli -v
 bash install/install-all.sh
 ```
 
-Filesystem-only smoke on macOS / Linux:
+If you need a filesystem-only debug request on macOS / Linux, rewrite the template's `workdir` first:
 
 ```bash
 mkdir -p /tmp/ccollab-filesystem-workdir
@@ -133,21 +135,11 @@ data = json.loads(src.read_text(encoding="utf-8"))
 data["workdir"] = "/tmp/ccollab-filesystem-workdir"
 dst.write_text(json.dumps(data), encoding="utf-8")
 PY
-~/.local/bin/ccollab run --request /tmp/ccollab-filesystem-request.json --task-root /tmp/ccollab-smoke-filesystem
 ```
 
-Git-aware smoke on macOS / Linux:
+If you need a Git-aware debug request on macOS / Linux, point the template at a disposable repo workdir before running it:
 
 ```bash
-git init /tmp/ccollab-git-smoke
-python3 - <<'PY'
-from pathlib import Path
-Path("/tmp/ccollab-git-smoke/README.md").write_text("smoke\n", encoding="utf-8")
-PY
-git -C /tmp/ccollab-git-smoke config user.name "ccollab smoke"
-git -C /tmp/ccollab-git-smoke config user.email "ccollab-smoke@example.com"
-git -C /tmp/ccollab-git-smoke add README.md
-git -C /tmp/ccollab-git-smoke commit -m "init smoke repo"
 python3 - <<'PY'
 import json
 from pathlib import Path
@@ -157,34 +149,14 @@ data = json.loads(src.read_text(encoding="utf-8"))
 data["workdir"] = "/tmp/ccollab-git-smoke"
 dst.write_text(json.dumps(data), encoding="utf-8")
 PY
-~/.local/bin/ccollab run --request /tmp/ccollab-git-smoke/request.json --task-root /tmp/ccollab-smoke-git
 ```
 
-Windows manual smoke in PowerShell:
+If you need a Windows debug request, keep the JSON rewrite BOM-safe:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install\install-all.ps1
-ccollab doctor
 New-Item -ItemType Directory -Force -Path $env:TEMP\ccollab-filesystem-workdir | Out-Null
 Copy-Item .\examples\filesystem-only-smoke-task.json $env:TEMP\ccollab-filesystem-request.template.json
 powershell -Command "$src='$env:TEMP\ccollab-filesystem-request.template.json'; $dst='$env:TEMP\ccollab-filesystem-request.json'; $data=Get-Content $src -Raw | ConvertFrom-Json; $data.workdir='$env:TEMP\ccollab-filesystem-workdir'; $json=$data | ConvertTo-Json -Depth 10; [System.IO.File]::WriteAllText($dst, $json, [System.Text.UTF8Encoding]::new($false))"
-ccollab run --request $env:TEMP\ccollab-filesystem-request.json --task-root $env:TEMP\ccollab-smoke-filesystem
-git init $env:TEMP\ccollab-git-smoke
-Set-Content -Path $env:TEMP\ccollab-git-smoke\README.md -Value "smoke"
-git -C $env:TEMP\ccollab-git-smoke config user.name "ccollab smoke"
-git -C $env:TEMP\ccollab-git-smoke config user.email "ccollab-smoke@example.com"
-git -C $env:TEMP\ccollab-git-smoke add README.md
-git -C $env:TEMP\ccollab-git-smoke commit -m "init smoke repo"
-Copy-Item .\examples\git-aware-smoke-task.json $env:TEMP\ccollab-git-smoke\request.template.json
-powershell -Command "$src='$env:TEMP\ccollab-git-smoke\request.template.json'; $dst='$env:TEMP\ccollab-git-smoke\request.json'; $data=Get-Content $src -Raw | ConvertFrom-Json; $data.workdir='$env:TEMP\ccollab-git-smoke'; $json=$data | ConvertTo-Json -Depth 10; [System.IO.File]::WriteAllText($dst, $json, [System.Text.UTF8Encoding]::new($false))"
-ccollab run --request $env:TEMP\ccollab-git-smoke\request.json --task-root $env:TEMP\ccollab-smoke-git
-```
-
-Windows CMD smoke can reuse the same prepared request:
-
-```cmd
-cmd /c ccollab doctor
-cmd /c ccollab run --request %TEMP%\ccollab-filesystem-request.json --task-root %TEMP%\ccollab-smoke-filesystem-cmd
 ```
 
 ## Troubleshooting
