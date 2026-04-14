@@ -175,3 +175,12 @@ class ReleasePayloadTests(TestCase):
             workflow.find("ccollab-linux-x64.tar.gz"),
             workflow.find("ccollab-manifest.json"),
         )
+
+    def test_release_workflow_retries_release_resolution_after_create(self) -> None:
+        workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("resolve_release_id()", workflow)
+        self.assertIn('release_id="$(resolve_release_id)"', workflow)
+        self.assertIn('gh release create "${RELEASE_TAG}"', workflow)
+        self.assertIn("for attempt in 1 2 3 4 5", workflow)
+        self.assertIn("sleep 2", workflow)

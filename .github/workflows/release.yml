@@ -39,14 +39,28 @@ jobs:
         run: |
           set -euo pipefail
           release_api_path="repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
-          if ! gh api "${release_api_path}" >/dev/null 2>&1; then
+          resolve_release_id() {
+            gh api "${release_api_path}" --jq '.id' 2>/dev/null || true
+          }
+          release_id="$(resolve_release_id)"
+          if [ -z "${release_id}" ]; then
             gh release create "${RELEASE_TAG}" \
               --repo "${RELEASE_REPO}" \
               --title "${RELEASE_TAG}" \
               --notes "Draft release for ${RELEASE_TAG}" \
-              --draft
+              --draft || true
+            for attempt in 1 2 3 4 5; do
+              release_id="$(resolve_release_id)"
+              if [ -n "${release_id}" ]; then
+                break
+              fi
+              sleep 2
+            done
           fi
-          release_id="$(gh api "${release_api_path}" --jq '.id')"
+          if [ -z "${release_id}" ]; then
+            echo "Failed to resolve release ${RELEASE_TAG} after draft creation."
+            exit 1
+          fi
           gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
 
       - name: Upload platform archives first
