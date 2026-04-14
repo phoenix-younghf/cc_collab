@@ -33,74 +33,40 @@ jobs:
             --version "${VERSION}" \
             --repo "${RELEASE_REPO}"
 
-      - name: Resolve release as draft
+      - name: Ensure draft release exists
+        id: ensure_release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_api_path="repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
-          resolve_release_id() {
-            candidate="$(gh api "${release_api_path}" --jq '.id' 2>/dev/null || true)"
-            if [[ "${candidate}" =~ ^[0-9]+$ ]]; then
-              printf '%s\n' "${candidate}"
-            fi
-          }
-          release_id="$(resolve_release_id)"
-          if [ -z "${release_id}" ]; then
-            gh release create "${RELEASE_TAG}" \
-              --repo "${RELEASE_REPO}" \
-              --title "${RELEASE_TAG}" \
-              --notes "Draft release for ${RELEASE_TAG}" \
-              --draft || true
-            for attempt in 1 2 3 4 5; do
-              release_id="$(resolve_release_id)"
-              if [ -n "${release_id}" ]; then
-                break
-              fi
-              sleep 2
-            done
-          fi
-          if [ -z "${release_id}" ]; then
-            echo "Failed to resolve release ${RELEASE_TAG} after draft creation."
-            exit 1
-          fi
-          gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
+          python3 scripts/release_workflow.py ensure-draft-release \
+            --repo "${RELEASE_REPO}" \
+            --tag "${RELEASE_TAG}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Upload platform archives first
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${RELEASE_TAG}" \
+          python3 scripts/release_workflow.py upload-assets \
+            --repo "${RELEASE_REPO}" \
+            --release-id "${{ steps.ensure_release.outputs.release_id }}" \
+            --clobber \
             "${DIST_DIR}/ccollab-windows-x64.zip" \
             "${DIST_DIR}/ccollab-macos-universal.tar.gz" \
-            "${DIST_DIR}/ccollab-linux-x64.tar.gz" \
-            --repo "${RELEASE_REPO}" \
-            --clobber
+            "${DIST_DIR}/ccollab-linux-x64.tar.gz"
 
       - name: Capture release and asset IDs
         id: release_identity
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_api_path="repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"
-          release_id="$(gh api "${release_api_path}" --jq '.id')"
-          windows_asset_id="$(gh api "${release_api_path}" --jq '.assets[] | select(.name == "ccollab-windows-x64.zip") | .id')"
-          macos_asset_id="$(gh api "${release_api_path}" --jq '.assets[] | select(.name == "ccollab-macos-universal.tar.gz") | .id')"
-          linux_asset_id="$(gh api "${release_api_path}" --jq '.assets[] | select(.name == "ccollab-linux-x64.tar.gz") | .id')"
-          for asset_id in "${windows_asset_id}" "${macos_asset_id}" "${linux_asset_id}"; do
-            if [ -z "${asset_id}" ]; then
-              echo "One or more release asset IDs are missing after archive upload."
-              exit 1
-            fi
-          done
-          {
-            echo "release_id=${release_id}"
-            echo "windows_asset_id=${windows_asset_id}"
-            echo "macos_asset_id=${macos_asset_id}"
-            echo "linux_asset_id=${linux_asset_id}"
-          } >> "${GITHUB_OUTPUT}"
+          python3 scripts/release_workflow.py capture-release-assets \
+            --repo "${RELEASE_REPO}" \
+            --tag "${RELEASE_TAG}" \
+            --github-output "${GITHUB_OUTPUT}"
 
       - name: Generate final ccollab-manifest.json
         run: |
@@ -115,23 +81,20 @@ jobs:
 
       - name: Upload final manifest
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "${RELEASE_TAG}" \
-            "${DIST_DIR}/ccollab-manifest.json" \
+          python3 scripts/release_workflow.py upload-assets \
             --repo "${RELEASE_REPO}" \
-            --clobber
+            --release-id "${{ steps.release_identity.outputs.release_id }}" \
+            --clobber \
+            "${DIST_DIR}/ccollab-manifest.json"
 
       - name: Keep release in draft state
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          release_id="${{ steps.release_identity.outputs.release_id }}"
-          gh api --method PATCH "repos/${RELEASE_REPO}/releases/${release_id}" -f draft=true >/dev/null
-          is_draft="$(gh api "repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}" --jq '.draft')"
-          if [ "${is_draft}" != "true" ]; then
-            echo "Release ${RELEASE_TAG} must remain draft for manual Windows validation."
-            exit 1
-          fi
+          python3 scripts/release_workflow.py ensure-draft-release \
+            --repo "${RELEASE_REPO}" \
+            --tag "${RELEASE_TAG}"

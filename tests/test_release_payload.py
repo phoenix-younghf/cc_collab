@@ -163,10 +163,12 @@ class ReleasePayloadTests(TestCase):
         self.assertIn("on:", workflow)
         self.assertIn("tags:", workflow)
         self.assertIn("v*.*.*", workflow)
-        self.assertIn("--draft", workflow)
-        self.assertIn('gh api "repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"', workflow)
-        self.assertNotIn("--json id", workflow)
-        self.assertNotIn("--json assets", workflow)
+        self.assertIn("python3 scripts/release_workflow.py ensure-draft-release", workflow)
+        self.assertIn("python3 scripts/release_workflow.py upload-assets", workflow)
+        self.assertIn("python3 scripts/release_workflow.py capture-release-assets", workflow)
+        self.assertNotIn("gh release create", workflow)
+        self.assertNotIn("gh release upload", workflow)
+        self.assertNotIn('gh api "repos/${RELEASE_REPO}/releases/tags/${RELEASE_TAG}"', workflow)
         self.assertIn("python3 scripts/build_release_payload.py build", workflow)
         self.assertIn("python3 scripts/build_release_payload.py write-manifest", workflow)
         self.assertIn("release_id", workflow)
@@ -176,12 +178,11 @@ class ReleasePayloadTests(TestCase):
             workflow.find("ccollab-manifest.json"),
         )
 
-    def test_release_workflow_retries_release_resolution_after_create(self) -> None:
+    def test_release_workflow_uses_python_release_helper_for_draft_resolution(self) -> None:
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-        self.assertIn("resolve_release_id()", workflow)
-        self.assertIn('release_id="$(resolve_release_id)"', workflow)
-        self.assertIn('gh release create "${RELEASE_TAG}"', workflow)
-        self.assertIn("for attempt in 1 2 3 4 5", workflow)
-        self.assertIn("sleep 2", workflow)
-        self.assertIn('[[ "${candidate}" =~ ^[0-9]+$ ]]', workflow)
+        self.assertIn("id: ensure_release", workflow)
+        self.assertIn("id: release_identity", workflow)
+        self.assertIn("--github-output", workflow)
+        self.assertIn("${{ steps.ensure_release.outputs.release_id }}", workflow)
+        self.assertIn("${{ steps.release_identity.outputs.release_id }}", workflow)
