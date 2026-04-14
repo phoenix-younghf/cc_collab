@@ -125,3 +125,19 @@ def resolve_claude_model(request: dict | None = None) -> str:
     if env_model:
         return env_model
     return DEFAULT_CLAUDE_MODEL
+
+
+def resolve_claude_timeout_seconds(request: dict | None = None) -> int | None:
+    requested_timeout = (
+        request.get("claude_role", {}).get("timeout_seconds")
+        if isinstance(request, dict)
+        else None
+    )
+    if isinstance(requested_timeout, int) and requested_timeout > 0:
+        return requested_timeout
+    env_timeout = os.environ.get("CCOLLAB_CLAUDE_TIMEOUT_SECONDS", "").strip()
+    if env_timeout.isdigit():
+        parsed = int(env_timeout)
+        if parsed > 0:
+            return parsed
+    return None

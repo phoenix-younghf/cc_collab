@@ -63,3 +63,4 @@ Smoke templates:
 - `examples/git-aware-smoke-task.json`
 
 These example requests are templates. Rewrite their `workdir` before running them, then use `ccollab run --request ... --task-root ...` to verify either the filesystem-only path or the Git-aware path.
+The shipped smoke templates pin Claude to `sonnet` and a `60` second timeout so smoke validation fails fast instead of hanging indefinitely.

@@ -66,6 +66,13 @@ def validate_request(payload: dict) -> None:
         isinstance(payload.get("inputs", {}).get("acceptance_criteria", []), list),
         "acceptance_criteria must be a list",
     )
+    timeout_seconds = payload.get("claude_role", {}).get("timeout_seconds")
+    if timeout_seconds is not None:
+        _require(
+            isinstance(timeout_seconds, int) and not isinstance(timeout_seconds, bool),
+            "claude_role.timeout_seconds must be an integer",
+        )
+        _require(timeout_seconds > 0, "claude_role.timeout_seconds must be >= 1")
 
 
 def validate_result(

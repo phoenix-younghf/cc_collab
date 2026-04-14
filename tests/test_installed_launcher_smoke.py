@@ -56,6 +56,11 @@ Usage: claude [options]
 EOF
   exit 0
 fi
+if [[ "${{CCOLLAB_FAKE_CLAUDE_MODE-stdout}}" == "timeout" ]]; then
+  printf 'partial stdout'
+  sleep "${{CCOLLAB_FAKE_CLAUDE_SLEEP_SECONDS-5}}"
+  exit 0
+fi
 printf '%s' "${{CCOLLAB_FAKE_CLAUDE_STDOUT}}"
 """
     _write_executable(bin_dir / "claude", script)
@@ -133,6 +138,9 @@ def run_installed_ccollab(
     temp_root: str,
     rewrite_workdir: str,
     seed_git_repo: bool = False,
+    fake_claude_mode: str = "stdout",
+    fake_claude_sleep_seconds: int = 5,
+    request_mutator: callable | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     temp_path = Path(temp_root)
     env = _base_env(temp_path, include_git=seed_git_repo)
@@ -146,6 +154,11 @@ def run_installed_ccollab(
         workdir.mkdir(parents=True, exist_ok=True)
     request_path = temp_path / "request.json"
     request = _rewrite_request(REPO_ROOT / template_name, request_path, workdir)
+    if request_mutator is not None:
+        request_mutator(request)
+        request_path.write_text(json.dumps(request), encoding="utf-8")
+    env["CCOLLAB_FAKE_CLAUDE_MODE"] = fake_claude_mode
+    env["CCOLLAB_FAKE_CLAUDE_SLEEP_SECONDS"] = str(fake_claude_sleep_seconds)
     env["CCOLLAB_FAKE_CLAUDE_STDOUT"] = json.dumps(
         {
             "task_id": request["task_id"],
@@ -203,3 +216,21 @@ class InstalledLauncherSmokeTests(TestCase):
             self.assertEqual(payload["status"], "completed")
             self.assertEqual(payload["runtime_mode"], "git-aware")
             self.assertTrue((task_dir / "result.md").exists())
+
+    def test_installed_launcher_timeout_persists_failure_artifacts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            result, task_dir = run_installed_ccollab(
+                "examples/filesystem-only-smoke-task.json",
+                temp_root=tmp,
+                rewrite_workdir=tmp,
+                fake_claude_mode="timeout",
+                fake_claude_sleep_seconds=2,
+                request_mutator=lambda request: request["claude_role"].__setitem__("timeout_seconds", 1),
+            )
+            self.assertEqual(result.returncode, 1)
+            payload = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "failed")
+            self.assertIn("timed out", payload["summary"].lower())
+            self.assertTrue((task_dir / "run.log").exists())
+            run_log = (task_dir / "run.log").read_text(encoding="utf-8")
+            self.assertIn("partial stdout", run_log)

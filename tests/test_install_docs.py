@@ -65,6 +65,14 @@ class InstallDocsTests(TestCase):
         self.assertIn("git init $env:TEMP\\ccollab-git-smoke", readme)
         self.assertIn("cmd /c ccollab run", readme)
 
+    def test_smoke_templates_use_bounded_claude_settings(self) -> None:
+        filesystem = Path("examples/filesystem-only-smoke-task.json").read_text(encoding="utf-8")
+        git_aware = Path("examples/git-aware-smoke-task.json").read_text(encoding="utf-8")
+        self.assertIn('"model": "sonnet"', filesystem)
+        self.assertIn('"timeout_seconds": 60', filesystem)
+        self.assertIn('"model": "sonnet"', git_aware)
+        self.assertIn('"timeout_seconds": 60', git_aware)
+
     def test_readme_uses_dedicated_filesystem_smoke_workdirs(self) -> None:
         readme = Path("README.md").read_text(encoding="utf-8")
         self.assertIn("/tmp/ccollab-filesystem-workdir", readme)

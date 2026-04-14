@@ -110,6 +110,7 @@ The files under `examples/` are templates, not drop-in runnable requests.
 - `examples/git-aware-smoke-task.json`
 
 Rewrite each template's `workdir` before running it.
+Both shipped smoke templates pin Claude to `sonnet` and set `claude_role.timeout_seconds` to `60` so manual smoke validation fails boundedly instead of hanging indefinitely.
 
 Local validation sequence on macOS / Linux:
 

@@ -12,7 +12,13 @@ from pathlib import Path
 
 from runtime import artifact_store
 from runtime.capabilities import RuntimeCapabilities, detect_runtime_capabilities
-from runtime.claude_runner import build_command, run_claude, select_agent_pack, serialize_agent_pack
+from runtime.claude_runner import (
+    ClaudeTimeoutError,
+    build_command,
+    run_claude,
+    select_agent_pack,
+    serialize_agent_pack,
+)
 from runtime.closeout_manager import (
     build_file_change_set_metadata,
     build_git_patch_metadata_for_workspace_pair,
@@ -21,7 +27,7 @@ from runtime.closeout_manager import (
     generate_patch,
     validate_terminal_state,
 )
-from runtime.config import resolve_claude_model, resolve_paths
+from runtime.config import resolve_claude_model, resolve_claude_timeout_seconds, resolve_paths
 from runtime.constants import (
     DEFAULT_PROMPT_BY_TASK,
     REQUEST_JSON,
@@ -173,6 +179,8 @@ def _repair_result_once(
     workdir: Path,
     schema_json: str,
     broken_output: str,
+    model: str | None = None,
+    timeout_seconds: int | None = None,
 ) -> dict:
     repair_prompt = (
         "Repair the following output into valid JSON that matches the schema. "
@@ -185,8 +193,15 @@ def _repair_result_once(
         schema_json=schema_json,
         runtime_contract="repair_mode=true",
         agent_pack_json=None,
+        model=model,
     )
-    repaired_stdout, _ = run_claude(repair_command)
+    if timeout_seconds is None:
+        repaired_stdout, _ = run_claude(repair_command)
+    else:
+        repaired_stdout, _ = run_claude(
+            repair_command,
+            timeout_seconds=timeout_seconds,
+        )
     return parse_result(repaired_stdout)
 
 
@@ -612,15 +627,21 @@ def handle_run(args: argparse.Namespace) -> int:
             execution_mode,
             allow_subagents,
         )
+        model = resolve_claude_model(request)
         command = build_command(
             workdir=str(target_workdir),
             prompt=prompt,
             schema_json=schema_json,
             runtime_contract=runtime_contract,
             agent_pack_json=serialize_agent_pack(agent_pack),
-            model=resolve_claude_model(request),
+            model=model,
         )
-        stdout, stderr = run_claude(command)
+        timeout_seconds = resolve_claude_timeout_seconds(request)
+        if timeout_seconds is not None:
+            run_log_lines.append(f"claude_timeout_seconds={timeout_seconds}")
+            stdout, stderr = run_claude(command, timeout_seconds=timeout_seconds)
+        else:
+            stdout, stderr = run_claude(command)
         run_log_lines.append(stderr)
         try:
             result = parse_result(stdout)
@@ -629,6 +650,8 @@ def handle_run(args: argparse.Namespace) -> int:
                 workdir=target_workdir,
                 schema_json=schema_json,
                 broken_output=stdout,
+                model=model,
+                timeout_seconds=timeout_seconds,
             )
         if not _looks_like_task_result(result):
             raw_result_output = _repair_source_output(result, stdout)
@@ -636,6 +659,8 @@ def handle_run(args: argparse.Namespace) -> int:
                 workdir=target_workdir,
                 schema_json=schema_json,
                 broken_output=raw_result_output,
+                model=model,
+                timeout_seconds=timeout_seconds,
             )
             if not _looks_like_task_result(result):
                 result = _normalize_unstructured_result(
@@ -882,6 +907,12 @@ def handle_run(args: argparse.Namespace) -> int:
         artifact_store.write_log_artifact(task_dir, RUN_LOG, "\n".join(run_log_lines) + "\n")
         return 1
     except (ValidationError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, ClaudeTimeoutError):
+            run_log_lines.append(str(exc))
+            if exc.stdout:
+                run_log_lines.append(exc.stdout)
+            if exc.stderr:
+                run_log_lines.append(exc.stderr)
         terminal = choose_failure_terminal_state([failure_terminal])
         metadata: dict | None = None
         if terminal == "patch-ready" and write_policy == "write-isolated" and declared_files:

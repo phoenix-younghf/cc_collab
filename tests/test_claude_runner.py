@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import subprocess
 from unittest import TestCase
 from unittest.mock import patch
 
-from runtime.claude_runner import RESEARCH_AGENT_PACK, build_command, resolve_claude_launcher, run_claude
+from runtime.claude_runner import (
+    RESEARCH_AGENT_PACK,
+    ClaudeTimeoutError,
+    build_command,
+    resolve_claude_launcher,
+    run_claude,
+)
 
 
 class ClaudeRunnerTests(TestCase):
@@ -61,3 +68,21 @@ class ClaudeRunnerTests(TestCase):
         stdout, stderr = run_claude(["claude", "-p"])
         self.assertEqual(stdout, '{"status":"completed"}')
         self.assertEqual(stderr, "")
+
+    @patch("runtime.claude_runner.subprocess.run")
+    def test_run_claude_raises_timeout_error_when_process_hangs(self, mock_run) -> None:
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            cmd=["claude", "-p"],
+            timeout=45,
+            output=b"partial stdout",
+            stderr=b"partial stderr",
+        )
+
+        with self.assertRaises(ClaudeTimeoutError) as ctx:
+            run_claude(["claude", "-p"], timeout_seconds=45)
+
+        self.assertEqual(ctx.exception.timeout_seconds, 45)
+        self.assertEqual(ctx.exception.stdout, "partial stdout")
+        self.assertEqual(ctx.exception.stderr, "partial stderr")
+        self.assertIn("45", str(ctx.exception))
+        self.assertEqual(mock_run.call_args.kwargs["timeout"], 45)

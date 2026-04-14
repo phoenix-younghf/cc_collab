@@ -5,7 +5,7 @@ from pathlib import Path, PureWindowsPath
 from unittest import TestCase
 from unittest.mock import patch
 
-from runtime.config import resolve_claude_model, resolve_paths
+from runtime.config import resolve_claude_model, resolve_claude_timeout_seconds, resolve_paths
 
 
 class ConfigTests(TestCase):
@@ -43,6 +43,18 @@ class ConfigTests(TestCase):
                 resolve_claude_model({"claude_role": {}}),
                 "claude-opus-4-6",
             )
+
+    def test_resolve_claude_timeout_seconds_prefers_request_then_env_then_none(self) -> None:
+        with patch.dict("os.environ", {"CCOLLAB_CLAUDE_TIMEOUT_SECONDS": "45"}, clear=True):
+            self.assertEqual(
+                resolve_claude_timeout_seconds({"claude_role": {"timeout_seconds": 30}}),
+                30,
+            )
+            self.assertEqual(resolve_claude_timeout_seconds({"claude_role": {}}), 45)
+        with patch.dict("os.environ", {"CCOLLAB_CLAUDE_TIMEOUT_SECONDS": "invalid"}, clear=True):
+            self.assertIsNone(resolve_claude_timeout_seconds({"claude_role": {}}))
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(resolve_claude_timeout_seconds({"claude_role": {}}))
 
     def test_resolve_paths_uses_windows_conventions(self) -> None:
         paths = resolve_paths(

@@ -163,6 +163,32 @@ class ValidatorTests(TestCase):
         with self.assertRaises(ValidationError):
             validate_request(request)
 
+    def test_timeout_seconds_must_be_positive_integer_when_present(self) -> None:
+        request = {
+            "task_id": "task-6",
+            "task_type": "research",
+            "execution_mode": "single-worker",
+            "write_policy": "read-only",
+            "origin": {"controller": "codex", "workflow_stage": "research"},
+            "workdir": "/tmp/project",
+            "objective": "Research",
+            "context_summary": "Summary",
+            "inputs": {
+                "files": [],
+                "constraints": [],
+                "acceptance_criteria": ["A"],
+                "verification_commands": [],
+                "closeout": {"on_success": "archived", "on_failure": "inspection-required"},
+            },
+            "claude_role": {
+                "mode": "research",
+                "allow_subagents": False,
+                "timeout_seconds": 0,
+            },
+        }
+        with self.assertRaises(ValidationError):
+            validate_request(request)
+
 
 class ResultValidatorContractTests(TestCase):
     def test_task_result_schema_declares_runtime_metadata(self) -> None:

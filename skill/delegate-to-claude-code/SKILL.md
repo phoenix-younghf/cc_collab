@@ -37,6 +37,7 @@ Do not delegate automatically when:
 - Expect `filesystem-only` execution when Git is unavailable or the workdir is outside Git.
 - If the repo is healthy but `git worktree` support is degraded, execution remains `Git-aware` and write-isolated tasks fall back to filesystem-copy isolation.
 - When using smoke requests from `examples/`, treat them as templates and rewrite `workdir` before invoking `ccollab run`.
+- The shipped smoke templates intentionally pin Claude to `sonnet` with a `60` second timeout so smoke validation stays bounded.
 
 ## Bootstrap
 

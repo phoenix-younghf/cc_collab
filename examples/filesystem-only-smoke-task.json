@@ -18,5 +18,10 @@
     "verification_commands": [],
     "closeout": {"on_success": "archived", "on_failure": "inspection-required"}
   },
-  "claude_role": {"mode": "research", "allow_subagents": false}
+  "claude_role": {
+    "mode": "research",
+    "allow_subagents": false,
+    "model": "sonnet",
+    "timeout_seconds": 60
+  }
 }

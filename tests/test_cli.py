@@ -19,6 +19,7 @@ from runtime.capabilities import (
     PythonCapability,
     RuntimeCapabilities,
 )
+from runtime.claude_runner import ClaudeTimeoutError
 from runtime.cli import _repair_source_output, main
 from runtime.constants import REQUIRED_CLAUDE_FLAGS
 from runtime.updater import (
@@ -125,6 +126,8 @@ def write_request(
     workdir: str | None = None,
     files: list[str] | None = None,
     create_workdir: bool = True,
+    claude_model: str | None = None,
+    timeout_seconds: int | None = None,
 ) -> Path:
     workdir_path = Path(workdir or temp_root)
     if create_workdir:
@@ -147,6 +150,14 @@ def write_request(
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             target.write_text("before", encoding="utf-8")
+    claude_role: dict[str, object] = {
+        "mode": "research",
+        "allow_subagents": False,
+    }
+    if claude_model is not None:
+        claude_role["model"] = claude_model
+    if timeout_seconds is not None:
+        claude_role["timeout_seconds"] = timeout_seconds
     request_path = Path(temp_root) / f"{task_id}.json"
     request_path.write_text(
         json.dumps(
@@ -172,10 +183,7 @@ def write_request(
                         "on_failure": failure_terminal or default_failure[write_policy],
                     },
                 },
-                "claude_role": {
-                    "mode": "research",
-                    "allow_subagents": False,
-                },
+                "claude_role": claude_role,
             }
         ),
         encoding="utf-8",
@@ -700,6 +708,126 @@ class CliIntegrationTests(TestCase):
             self.assertEqual(result["status"], "completed")
             self.assertEqual(result["runtime_mode"], "filesystem-only")
             self.assertEqual(call_count, 2)
+
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    @patch("runtime.cli.capture_git_head", side_effect=["before", "before"])
+    def test_run_persists_timeout_failure_when_claude_hangs(
+        self,
+        _mock_head,
+        _mock_status,
+        _mock_changes,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                task_id="task-timeout",
+                write_policy="read-only",
+                timeout_seconds=45,
+            )
+            with patch("runtime.cli.detect_runtime_capabilities", return_value=filesystem_only_caps()):
+                with patch("runtime.cli.run_claude", side_effect=ClaudeTimeoutError(45)):
+                    exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            task_dir = Path(tmp) / "task-timeout"
+            result = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("timed out", result["summary"].lower())
+            self.assertEqual(result["terminal_state"], "inspection-required")
+            self.assertTrue((task_dir / "run.log").exists())
+
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    @patch("runtime.cli.capture_git_head", side_effect=["before", "before"])
+    def test_run_persists_timeout_failure_with_partial_bytes_output(
+        self,
+        _mock_head,
+        _mock_status,
+        _mock_changes,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                task_id="task-timeout-bytes",
+                write_policy="read-only",
+                timeout_seconds=45,
+            )
+            with patch("runtime.cli.detect_runtime_capabilities", return_value=filesystem_only_caps()):
+                with patch(
+                    "runtime.cli.run_claude",
+                    side_effect=ClaudeTimeoutError(
+                        45,
+                        stdout=b"partial stdout",
+                        stderr=b"partial stderr",
+                    ),
+                ):
+                    exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            task_dir = Path(tmp) / "task-timeout-bytes"
+            result = json.loads((task_dir / "result.json").read_text(encoding="utf-8"))
+            run_log = (task_dir / "run.log").read_text(encoding="utf-8")
+            self.assertEqual(exit_code, 1)
+            self.assertEqual(result["status"], "failed")
+            self.assertIn("timed out", result["summary"].lower())
+            self.assertIn("partial stdout", run_log)
+            self.assertIn("partial stderr", run_log)
+
+    @patch("runtime.cli.run_claude", return_value=(completed_output("task-timeout-2"), ""))
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    @patch("runtime.cli.capture_git_head", side_effect=["before", "before"])
+    def test_run_passes_request_timeout_to_runner(
+        self,
+        _mock_head,
+        _mock_status,
+        _mock_changes,
+        mock_run,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                task_id="task-timeout-2",
+                write_policy="read-only",
+                timeout_seconds=45,
+            )
+            with patch("runtime.cli.detect_runtime_capabilities", return_value=filesystem_only_caps()):
+                exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(mock_run.call_args.kwargs["timeout_seconds"], 45)
+
+    @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])
+    @patch("runtime.cli.capture_git_status", return_value="")
+    @patch("runtime.cli.capture_git_head", side_effect=["before", "before"])
+    def test_run_repair_uses_requested_model_and_timeout(
+        self,
+        _mock_head,
+        _mock_status,
+        _mock_changes,
+    ) -> None:
+        calls: list[tuple[list[str], dict[str, object]]] = []
+
+        def fake_run(command: list[str], **kwargs: object) -> tuple[str, str]:
+            calls.append((command, kwargs))
+            if len(calls) == 1:
+                return '{"invalid":', ""
+            return completed_output("task-repair-timeout"), ""
+
+        with TemporaryDirectory() as tmp:
+            request = write_request(
+                tmp,
+                task_id="task-repair-timeout",
+                write_policy="read-only",
+                claude_model="sonnet",
+                timeout_seconds=45,
+            )
+            with patch("runtime.cli.detect_runtime_capabilities", return_value=filesystem_only_caps()):
+                with patch("runtime.cli.run_claude", side_effect=fake_run):
+                    exit_code = main(["run", "--request", str(request), "--task-root", tmp])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[0][1]["timeout_seconds"], 45)
+            self.assertEqual(calls[1][1]["timeout_seconds"], 45)
+            self.assertIn("--model", calls[1][0])
+            self.assertIn("sonnet", calls[1][0])
 
     @patch("runtime.cli.run_claude", return_value=(completed_output("task-1"), ""))
     @patch("runtime.cli.detect_post_run_changes_with_snapshots", return_value=[])

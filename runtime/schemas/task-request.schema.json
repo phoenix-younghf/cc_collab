@@ -62,7 +62,8 @@
       "properties": {
         "mode": {"type": "string"},
         "allow_subagents": {"type": "boolean"},
-        "model": {"type": "string"}
+        "model": {"type": "string"},
+        "timeout_seconds": {"type": "integer", "minimum": 1}
       }
     }
   }
