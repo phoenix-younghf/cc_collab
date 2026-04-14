@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import threading
+import time
 
 
 def _coerce_timeout_stream(value: str | bytes | None) -> str:
@@ -117,25 +120,103 @@ def select_agent_pack(task_type: str, execution_mode: str, allow_subagents: bool
     return None
 
 
+def _is_windows_batch_launcher(command: str) -> bool:
+    if os.name != "nt":
+        return False
+    return command.lower().endswith((".cmd", ".bat"))
+
+
+def _prepare_subprocess_command(cmd: list[str]) -> list[str]:
+    if not cmd or not _is_windows_batch_launcher(cmd[0]):
+        return cmd
+    return ["cmd.exe", "/d", "/s", "/c", subprocess.list2cmdline(cmd)]
+
+
+def _read_stream(stream: object, chunks: list[str]) -> None:
+    if stream is None:
+        return
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+
+
+def _start_reader_thread(stream: object, chunks: list[str]) -> threading.Thread:
+    thread = threading.Thread(target=_read_stream, args=(stream, chunks), daemon=True)
+    thread.start()
+    return thread
+
+
+def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _looks_like_complete_json(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    try:
+        json.loads(stripped)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
 def run_claude(
     cmd: list[str],
     *,
     timeout_seconds: int | None = None,
 ) -> tuple[str, str]:
-    try:
-        result = subprocess.run(
-            cmd,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout_seconds,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise ClaudeTimeoutError(
-            int(timeout_seconds or exc.timeout),
-            stdout=exc.output,
-            stderr=exc.stderr,
-        ) from exc
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or "claude failed")
-    return result.stdout, result.stderr
+    process = subprocess.Popen(
+        _prepare_subprocess_command(cmd),
+        text=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=(
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            if _is_windows_batch_launcher(cmd[0])
+            else 0
+        ),
+    )
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    stdout_thread = _start_reader_thread(process.stdout, stdout_chunks)
+    stderr_thread = _start_reader_thread(process.stderr, stderr_chunks)
+    timed_out = False
+    deadline = None if timeout_seconds is None else time.monotonic() + timeout_seconds
+
+    while process.poll() is None:
+        if deadline is not None and time.monotonic() >= deadline:
+            timed_out = True
+            _terminate_process_tree(process)
+            break
+        time.sleep(0.1)
+
+    process.wait()
+    stdout_thread.join(timeout=5)
+    stderr_thread.join(timeout=5)
+    stdout = "".join(stdout_chunks)
+    stderr = "".join(stderr_chunks)
+
+    if timed_out:
+        if _looks_like_complete_json(stdout):
+            return stdout, stderr
+        raise ClaudeTimeoutError(int(timeout_seconds or 0), stdout=stdout, stderr=stderr)
+    if process.returncode != 0:
+        raise RuntimeError(stderr or "claude failed")
+    return stdout, stderr

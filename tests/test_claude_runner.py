@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import subprocess
 from unittest import TestCase
 from unittest.mock import patch
@@ -60,29 +61,104 @@ class ClaudeRunnerTests(TestCase):
         self.assertIn("synthesizer", RESEARCH_AGENT_PACK)
         self.assertIn("critic", RESEARCH_AGENT_PACK)
 
-    @patch("runtime.claude_runner.subprocess.run")
+    @patch("runtime.claude_runner.subprocess.Popen")
     def test_run_claude_returns_stdout_and_log(self, mock_run) -> None:
-        mock_run.return_value.returncode = 0
-        mock_run.return_value.stdout = '{"status":"completed"}'
-        mock_run.return_value.stderr = ""
+        process = _FakeProcess(
+            stdout_text='{"status":"completed"}',
+            stderr_text="",
+            poll_sequence=[0],
+        )
+        mock_run.return_value = process
         stdout, stderr = run_claude(["claude", "-p"])
         self.assertEqual(stdout, '{"status":"completed"}')
         self.assertEqual(stderr, "")
 
-    @patch("runtime.claude_runner.subprocess.run")
-    def test_run_claude_raises_timeout_error_when_process_hangs(self, mock_run) -> None:
-        mock_run.side_effect = subprocess.TimeoutExpired(
-            cmd=["claude", "-p"],
-            timeout=45,
-            output=b"partial stdout",
-            stderr=b"partial stderr",
+    @patch("runtime.claude_runner.time.sleep", return_value=None)
+    @patch("runtime.claude_runner._terminate_process_tree")
+    @patch("runtime.claude_runner.subprocess.Popen")
+    def test_run_claude_raises_timeout_error_when_process_hangs(
+        self,
+        mock_popen,
+        mock_terminate,
+        _sleep,
+    ) -> None:
+        process = _FakeProcess(
+            stdout_text="partial stdout",
+            stderr_text="partial stderr",
+            poll_sequence=[None, None],
         )
+        mock_popen.return_value = process
 
         with self.assertRaises(ClaudeTimeoutError) as ctx:
-            run_claude(["claude", "-p"], timeout_seconds=45)
+            run_claude(["claude", "-p"], timeout_seconds=0)
 
-        self.assertEqual(ctx.exception.timeout_seconds, 45)
+        self.assertEqual(ctx.exception.timeout_seconds, 0)
         self.assertEqual(ctx.exception.stdout, "partial stdout")
         self.assertEqual(ctx.exception.stderr, "partial stderr")
-        self.assertIn("45", str(ctx.exception))
-        self.assertEqual(mock_run.call_args.kwargs["timeout"], 45)
+        self.assertIn("0", str(ctx.exception))
+        mock_terminate.assert_called_once_with(process)
+
+    @patch("runtime.claude_runner.time.sleep", return_value=None)
+    @patch("runtime.claude_runner._terminate_process_tree")
+    @patch("runtime.claude_runner.subprocess.Popen")
+    def test_run_claude_returns_valid_json_emitted_before_timeout(
+        self,
+        mock_popen,
+        mock_terminate,
+        _sleep,
+    ) -> None:
+        process = _FakeProcess(
+            stdout_text='{"status":"completed"}',
+            stderr_text="",
+            poll_sequence=[None, None],
+        )
+        mock_popen.return_value = process
+
+        stdout, stderr = run_claude(["claude", "-p"], timeout_seconds=0)
+
+        self.assertEqual(stdout, '{"status":"completed"}')
+        self.assertEqual(stderr, "")
+        mock_terminate.assert_called_once_with(process)
+
+    @patch("runtime.claude_runner.os.name", "nt")
+    @patch("runtime.claude_runner.subprocess.Popen")
+    def test_run_claude_wraps_windows_batch_launchers_via_cmd_exe(
+        self,
+        mock_popen,
+    ) -> None:
+        process = _FakeProcess(
+            stdout_text='{"status":"completed"}',
+            stderr_text="",
+            poll_sequence=[0],
+        )
+        mock_popen.return_value = process
+
+        run_claude([r"C:\nvm4w\nodejs\claude.CMD", "-p"])
+
+        self.assertEqual(
+            mock_popen.call_args.args[0][:4],
+            ["cmd.exe", "/d", "/s", "/c"],
+        )
+        self.assertIn(r'C:\nvm4w\nodejs\claude.CMD -p', mock_popen.call_args.args[0][4])
+
+
+class _FakeProcess:
+    def __init__(self, *, stdout_text: str, stderr_text: str, poll_sequence: list[int | None]) -> None:
+        self.stdout = io.StringIO(stdout_text)
+        self.stderr = io.StringIO(stderr_text)
+        self._poll_sequence = list(poll_sequence)
+        self.returncode = None
+        self.pid = 1234
+
+    def poll(self) -> int | None:
+        if self._poll_sequence:
+            result = self._poll_sequence.pop(0)
+            if result is not None:
+                self.returncode = result
+            return result
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is None:
+            self.returncode = 1
+        return self.returncode
